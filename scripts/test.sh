@@ -33,7 +33,8 @@ clang++-$V -O2 -std=c++17 "$HERE/tools/mmvk-check.cpp" -I"$SRC/ggml/include" -L"
   -Wl,-rpath-link,"$CUDA_DIR/lib64" -Wl,--disable-new-dtags -o "$B/mmvk-check" || { echo "mmvk-check build failed"; exit 1; }
 NCT=$(grep -oE 'MMVK_NCOLS_TYPES: [A-Za-z0-9_,]+' "$SRC/ggml/src/ggml-cuda/mmvk.cu" | head -1 | cut -d' ' -f2)
 for mode in "" --weights; do
-  out=$(MMVK_CHECK_NCOLS="$NCT" "$B/mmvk-check" $mode 2>&1); rc=$?
+  # every weight type the Kepler kernels handle (the release gate checks the same set: 597 cases per mode)
+  out=$(MMVK_CHECK_NCOLS="$NCT" MMVK_CHECK_TYPES=q4_K,q6_K,q8_0,q5_0,f16,q3_K,iq3_xxs,q5_K "$B/mmvk-check" $mode 2>&1); rc=$?
   echo "$out" | grep -E '^SUMMARY' || echo "  no SUMMARY line (crash?)"
   echo "$out" | grep -E '^FAIL' | head -5
   { [ $rc -eq 0 ] && echo "$out" | grep -q '^SUMMARY.* 0 FAIL'; } || fail=1
