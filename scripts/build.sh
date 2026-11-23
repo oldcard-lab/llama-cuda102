@@ -44,7 +44,10 @@ cmake -S "$SRC" -B "$SRC/build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_BUILD_RPATH="$SRC/build/bin;$CUDA_DIR/lib64" \
   -DGGML_CUDA=ON -DGGML_NATIVE=ON \
   -DGGML_CUDA_GRAPHS=OFF -DGGML_CUDA_FA=OFF -DGGML_CUDA_NCCL=OFF -DGGML_CUDA_NO_VMM=ON \
-  -DLLAMA_BUILD_TESTS=ON -DLLAMA_CURL=OFF
+  -DLLAMA_BUILD_HTML=OFF -DLLAMA_USE_PREBUILT_UI=OFF -DLLAMA_CURL=OFF \
+  -DLLAMA_BUILD_TESTS=ON -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_TOOLS=ON
+# (LLAMA_BUILD_HTML / LLAMA_USE_PREBUILT_UI off: llama-server's web UI assets otherwise need a Node.js toolchain at
+# build time; the server's API works without them.)
 # shellcheck disable=SC2086
 cmake --build "$SRC/build" -j "$JOBS" --target $TARGETS
 echo "built: $SRC/build/bin"
