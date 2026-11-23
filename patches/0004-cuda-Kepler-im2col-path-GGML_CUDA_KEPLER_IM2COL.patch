@@ -1,0 +1,198 @@
+From 46f366f0e74f476f4412361a43b169b4c879bce3 Mon Sep 17 00:00:00 2001
+From: kepler-llama <kepler-llama@localhost>
+Date: Sun, 22 Nov 2026 22:31:37 -0600
+Subject: [PATCH 4/5] cuda: Kepler im2col path (GGML_CUDA_KEPLER_IM2COL)
+
+32-bit indices, no per-element division, coalesced writes along the output row. YOLOv3-tiny 416x416 on a
+GTX 650 Ti: 45.8 -> 37.3 ms per frame.
+---
+ ggml/src/ggml-cuda/im2col.cu | 157 +++++++++++++++++++++++++++++++++++
+ 1 file changed, 157 insertions(+)
+
+diff --git a/ggml/src/ggml-cuda/im2col.cu b/ggml/src/ggml-cuda/im2col.cu
+index d377f28..b07cb0b 100644
+--- a/ggml/src/ggml-cuda/im2col.cu
++++ b/ggml/src/ggml-cuda/im2col.cu
+@@ -1,8 +1,19 @@
+ #include "im2col.cuh"
++#include "convert.cuh"
++
++#include <cstring>
+ 
+ #define MAX_GRIDDIM_Y 65535
+ #define MAX_GRIDDIM_Z 65535
+ 
++static const char * im2col_kepler_variant() {
++    static const char * variant = []() {
++        const char * env = std::getenv("GGML_CUDA_KEPLER_IM2COL");
++        return env == nullptr ? "auto" : env;
++    }();
++    return variant;
++}
++
+ template <typename T>
+ static  __global__ void im2col_kernel(
+         const float * x, T * dst,
+@@ -44,6 +55,148 @@ static  __global__ void im2col_kernel(
+     }
+ }
+ 
++template <typename T>
++static __global__ void im2col_kepler_row_kernel(
++        const float * x, T * dst,
++        int IC, int IW, int IH, int OH, int OW, int KW, int KH, int N,
++        int IC_IH_IW, int IH_IW, int KH_KW, int IC_KH_KW,
++        int s0, int s1, int p0, int p1, int d0, int d1) {
++    const int feature = blockIdx.x * blockDim.x + threadIdx.x;
++    const int total_rows = N * OH * OW;
++    if (feature >= IC_KH_KW) {
++        return;
++    }
++
++    for (int row = blockIdx.y; row < total_rows; row += gridDim.y) {
++        const int channel = feature / KH_KW;
++        const int rem = feature - channel * KH_KW;
++        const int ky = rem / KW;
++        const int kx = rem - ky * KW;
++        const int ox = row % OW;
++        const int oy = (row / OW) % OH;
++        const int batch = row / (OW * OH);
++        const int ix = ox * s0 + kx * d0 - p0;
++        const int iy = oy * s1 + ky * d1 - p1;
++        const int dst_offset = row * IC_KH_KW + feature;
++
++        if (ix < 0 || ix >= IW || iy < 0 || iy >= IH) {
++            dst[dst_offset] = ggml_cuda_cast<T>(0.0f);
++        } else {
++            const int src_offset = channel * IC_IH_IW + batch * IH_IW + iy * IW + ix;
++            dst[dst_offset] = ggml_cuda_cast<T>(x[src_offset]);
++        }
++    }
++}
++
++template <typename T>
++static __global__ void im2col_kepler_row_channel_kernel(
++        const float * x, T * dst,
++        int IC, int IW, int IH, int OH, int OW, int KW, int KH, int N,
++        int IC_IH_IW, int IH_IW, int KH_KW, int IC_KH_KW,
++        int s0, int s1, int p0, int p1, int d0, int d1) {
++    const int channel = blockIdx.x * blockDim.x + threadIdx.x;
++    const int total_rows = N * OH * OW;
++    if (channel >= IC) {
++        return;
++    }
++
++    for (int row = blockIdx.y; row < total_rows; row += gridDim.y) {
++        const int ox = row % OW;
++        const int oy = (row / OW) % OH;
++        const int batch = row / (OW * OH);
++        const int iy0 = oy * s1 - p1;
++        const int ix0 = ox * s0 - p0;
++        const int src_channel = channel * IC_IH_IW + batch * IH_IW;
++        const int dst_channel = row * IC_KH_KW + channel * KH_KW;
++
++        for (int ky = 0; ky < KH; ++ky) {
++            const int iy = iy0 + ky * d1;
++            for (int kx = 0; kx < KW; ++kx) {
++                const int ix = ix0 + kx * d0;
++                const int dst_offset = dst_channel + ky * KW + kx;
++                if (ix < 0 || ix >= IW || iy < 0 || iy >= IH) {
++                    dst[dst_offset] = ggml_cuda_cast<T>(0.0f);
++                } else {
++                    const int src_offset = src_channel + iy * IW + ix;
++                    dst[dst_offset] = ggml_cuda_cast<T>(x[src_offset]);
++                }
++            }
++        }
++    }
++}
++
++template <typename T>
++static __global__ void im2col_kepler_transpose_kernel(
++        const float * x, T * dst, int IC, int IW, int IH, int N, int IC_IH_IW, int IH_IW) {
++    __shared__ float tile[32][33];
++    const int tx = threadIdx.x;
++    const int ty = threadIdx.y;
++    const int pos = blockIdx.x * 32 + tx;
++    const int channel = blockIdx.y * 32 + ty;
++    const int batch = blockIdx.z;
++    const int spatial = IW * IH;
++
++    for (int j = 0; j < 32; j += 8) {
++        const int load_channel = channel + j;
++        tile[ty + j][tx] = pos < spatial && load_channel < IC
++            ? x[load_channel * IC_IH_IW + batch * IH_IW + pos] : 0.0f;
++    }
++    __syncthreads();
++
++    const int out_pos = blockIdx.x * 32 + ty;
++    const int out_channel = blockIdx.y * 32 + tx;
++    for (int j = 0; j < 32; j += 8) {
++        const int write_pos = out_pos + j;
++        if (write_pos < spatial && out_channel < IC) {
++            dst[batch * spatial * IC + write_pos * IC + out_channel] = ggml_cuda_cast<T>(tile[tx][ty + j]);
++        }
++    }
++}
++
++template <typename T>
++static bool im2col_kepler_cuda(const float * x, T * dst,
++        int64_t IW, int64_t IH, int64_t OW, int64_t OH, int64_t KW, int64_t KH, int64_t IC,
++        int64_t N, int64_t IC_IH_IW, int64_t IH_IW,
++        int s0, int s1, int p0, int p1, int d0, int d1, cudaStream_t stream) {
++    const char * variant = im2col_kepler_variant();
++    if (std::strcmp(variant, "off") == 0) {
++        return false;
++    }
++    if (IW > INT_MAX || IH > INT_MAX || OW > INT_MAX || OH > INT_MAX || KW > INT_MAX || KH > INT_MAX ||
++        IC > INT_MAX || N > INT_MAX || IC_IH_IW > INT_MAX || IH_IW > INT_MAX ||
++        IC * KH * KW > INT_MAX || N * OH * OW > INT_MAX) {
++        return false;
++    }
++    const int iw = (int) IW, ih = (int) IH, ow = (int) OW, oh = (int) OH;
++    const int kw = (int) KW, kh = (int) KH, ic = (int) IC, n = (int) N;
++    const int ic_ih_iw = (int) IC_IH_IW, ih_iw = (int) IH_IW;
++    const int kh_kw = kw * kh, ic_kh_kw = ic * kh_kw;
++    const int total_rows = n * oh * ow;
++    if ((std::strcmp(variant, "transpose") == 0 || std::strcmp(variant, "auto") == 0) &&
++        kw == 1 && kh == 1 && s0 == 1 && s1 == 1 && p0 == 0 && p1 == 0 && d0 == 1 && d1 == 1 &&
++        IC_IH_IW == IH_IW * IC && IH_IW == IW * IH) {
++        const dim3 block(32, 8);
++        const dim3 grid((IW * IH + 31) / 32, (ic + 31) / 32, n);
++        im2col_kepler_transpose_kernel<<<grid, block, 0, stream>>>(x, dst, ic, iw, ih, n, ic_ih_iw, ih_iw);
++        return true;
++    }
++    if (std::strcmp(variant, "row") == 0 || std::strcmp(variant, "auto") == 0) {
++        const dim3 block(256);
++        const dim3 grid((ic_kh_kw + 255) / 256, MIN(total_rows, MAX_GRIDDIM_Y));
++        im2col_kepler_row_kernel<<<grid, block, 0, stream>>>(x, dst, ic, iw, ih, oh, ow, kw, kh, n,
++                ic_ih_iw, ih_iw, kh_kw, ic_kh_kw, s0, s1, p0, p1, d0, d1);
++        return true;
++    }
++    if (std::strcmp(variant, "row_channel") == 0) {
++        const dim3 block(256);
++        const dim3 grid((ic + 255) / 256, MIN(total_rows, MAX_GRIDDIM_Y));
++        im2col_kepler_row_channel_kernel<<<grid, block, 0, stream>>>(x, dst, ic, iw, ih, oh, ow, kw, kh, n,
++                ic_ih_iw, ih_iw, kh_kw, ic_kh_kw, s0, s1, p0, p1, d0, d1);
++        return true;
++    }
++    return false;
++}
++
+ // im2col: [N, IC, IH, IW] => [N, OH, OW, IC*KH*KW]
+ template <typename T>
+ static void im2col_cuda(const float * x, T* dst,
+@@ -53,6 +206,10 @@ static void im2col_cuda(const float * x, T* dst,
+     const int64_t IC_KH_KW = IC * KH * KW;
+     const int64_t N_OH = N * OH;
+     const int64_t KH_KW = KW*KH;
++    if (im2col_kepler_cuda(x, dst, IW, IH, OW, OH, KW, KH, IC, N, IC_IH_IW, IH_IW,
++            s0, s1, p0, p1, d0, d1, stream)) {
++        return;
++    }
+     const int threads_per_block = MIN((int)IC_KH_KW, CUDA_IM2COL_BLOCK_SIZE);
+     dim3 block_nums(MIN(OW, MAX_GRIDDIM_Y), MIN(N_OH, MAX_GRIDDIM_Z));
+ 
+-- 
+2.56.1.windows.1
+

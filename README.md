@@ -1,0 +1,76 @@
+# kepler-llama: llama.cpp on NVIDIA Kepler (sm_30) GPUs
+
+A patch series for [llama.cpp](https://github.com/ggml-org/llama.cpp) that runs its CUDA backend on Kepler GPUs
+with compute capability 3.0 (GeForce GTX 600 / 700 series cards such as the GTX 650 Ti, 660, 670, 680, 760, 770),
+plus Kepler-tuned kernels that make small language models, speech and vision models practical on a 1-2 GB card.
+
+Current CUDA releases dropped Kepler long ago. This series builds llama.cpp's CUDA backend with the last toolkit
+that supports sm_30 (CUDA 10.2), using clang as the CUDA compiler, and adds:
+
+- **Kepler matrix-vector kernels** for token generation (Q3_K, Q4_K, Q5_K, Q6_K, Q8_0, Q5_0, IQ3_XXS, F16) and the
+  attention matvecs, 1.8-3.3x the stock CUDA kernels on this hardware.
+- **A faster prompt path** on Kepler: row-chunked dequantization and token columns padded so cuBLAS 10.2 picks its
+  fast sm_30 GEMM kernel.
+- **A Kepler im2col** for convolution models (YOLO-class detectors), 18% faster per frame.
+- A **FunctionGemma** tool-call parser for `llama-server --jinja`.
+
+Measured on a GeForce GTX 650 Ti (GK106, 1 GB) with an i7-4770: see [docs/RESULTS.md](docs/RESULTS.md).
+Examples: LFM2.5-350M Q4_K_M generates 88.6 tokens/s; Qwen3-1.7B (3-bit) 23.2 tokens/s; whisper small.en
+transcribes an 11 s clip in about 2.6 s; YOLOv3-tiny runs at 26.8 frames/s.
+
+## Requirements
+
+- An NVIDIA GPU with compute capability 3.0 (other Kepler parts, 3.5 / 3.7, are untested; see below).
+- Linux x86-64 with the NVIDIA **470** driver (the last branch that supports Kepler). Tested on Ubuntu 26.04 with
+  470.256.02 built as a DKMS module.
+- The **CUDA 10.2 toolkit** (toolkit only; do not install its bundled 440 driver): `scripts/install-cuda-10.2.sh`
+  installs it into a private prefix without root.
+- **clang 22** (clang-22, clang++-22, ld.lld-22), cmake, ninja, git. CUDA 10.2's nvcc only accepts old host
+  compilers, so clang compiles the CUDA code.
+
+## Build
+
+```bash
+scripts/install-cuda-10.2.sh ~/cuda-10.2        # once: downloads 2.6 GB from NVIDIA, verifies the md5
+scripts/build.sh work ~/cuda-10.2                # clones llama.cpp v0.8.0, applies patches/, builds
+scripts/test.sh  work ~/cuda-10.2                # correctness checks on the GPU (MODEL=x.gguf adds a model run)
+```
+
+The binaries are in `work/llama.cpp/build/bin` (`llama-cli`, `llama-server`, `llama-completion`, `llama-bench`).
+The series applies to llama.cpp **v0.8.0** (commit `8642541b255bfb5dc39cd351a178be09013a55d6`) with `git am`.
+
+## Using it
+
+Run models fully on the GPU (`-ngl 99`) and keep flash attention off (`-fa off`: this build has no flash-attention
+kernels for sm_30; "auto" costs about 8%). A 1 GB card fits models up to about 900 MB with a modest context:
+
+```bash
+llama-server -m LFM2.5-350M-Q4_K_M.gguf -ngl 99 -fa off -t 1
+llama-cli    -m Qwen3-1.7B-Q3_K_S.gguf  -ngl 99 -fa off -c 1024 -ub 32
+```
+
+- Models of about 700 MB and up need a smaller micro-batch: `-ub 128`, or `-ub 32` for 1.7B models at 3 bits.
+- 1.7B models fit at 3 bits per weight (Q3_K_S / Q3_K_M with an importance matrix keep quality close to 4-bit).
+- `-ctk q8_0` (8-bit K cache) frees enough memory for `-ub 64` at `-c 1024` on 1.7B models: prompt processing
+  57 t/s instead of 31, for about +1.2% perplexity and -3% generation speed.
+- Every Kepler path has a switch: `GGML_CUDA_KEPLER_MMV=0` (matvec kernels off), `GGML_CUDA_KEPLER_PP=off`,
+  `GGML_CUDA_KEPLER_IM2COL=off` restore the stock code paths; `GGML_CUDA_KEPLER_TRACE=1` prints which kernel ran.
+
+## Status and limits
+
+- Tested on one card type (GTX 650 Ti, sm_30). Reports from other Kepler cards are very welcome, especially
+  sm_35 / sm_37 (GTX 780 / Titan, Tesla K40 / K80), which this build does not target yet.
+- BF16 operations run on the CPU (CUDA 10.2 has no BF16 support).
+- No flash attention; no CUDA graphs.
+- The prompt path's speed-up applies below compute capability 5.0 only; other GPUs are unaffected by this series
+  (every change is guarded by architecture or CUDA version).
+
+## How it was made
+
+The compatibility layer (patches 0001-0002) was written clean-room from compiler errors and CUDA documentation;
+see [docs/PROVENANCE.md](docs/PROVENANCE.md). The kernels were developed with AI coding agents under human
+direction, with a strict correctness gate on every release; see [docs/AI-USAGE.md](docs/AI-USAGE.md).
+
+## Licence
+
+MIT, like llama.cpp. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
