@@ -24,12 +24,32 @@ transcribes an 11 s clip in about 2.6 s; YOLOv3-tiny runs at 26.8 frames/s.
 ## Requirements
 
 - An NVIDIA GPU with compute capability 3.0 (see "Tested on" below).
-- Linux x86-64 with the NVIDIA **470** driver (the last branch that supports Kepler). Tested on Ubuntu 26.04 with
-  470.256.02 built as a DKMS module.
+- Linux x86-64 with the NVIDIA **470** driver (the last branch that supports Kepler); see "Driver setup" below.
+  Tested on Ubuntu 26.04 (kernel 7.0) with 470.256.02 built as a DKMS module.
 - The **CUDA 10.2 toolkit** (toolkit only; do not install its bundled 440 driver): `scripts/install-cuda-10.2.sh`
   installs it into a private prefix without root.
 - **clang 22** (clang-22, clang++-22, ld.lld-22), cmake, ninja, git. CUDA 10.2's nvcc only accepts old host
-  compilers, so clang compiles the CUDA code.
+  compilers, so clang compiles the CUDA code. On Ubuntu 26.04: `sudo apt install clang-22 lld-22 cmake ninja-build
+  git`. On older distributions, get clang 22 from the LLVM project's packages (https://apt.llvm.org).
+
+## Driver setup
+
+Kepler's last driver is **470.256.02**. Getting it running is usually the hardest step, and how hard depends on your
+kernel:
+
+- **Older kernels:** if your distribution still packages the 470 driver for its kernel (for example
+  `nvidia-driver-470` on Ubuntu 22.04), install that package and reboot.
+- **Kernel 7.0 (Ubuntu 26.04, current Arch):** NVIDIA's 470.256.02 installer does not build on this kernel by
+  itself. We use the community patches from
+  [haxllo/nvidia-470xx-linux-7.0](https://github.com/haxllo/nvidia-470xx-linux-7.0) (GPL-2.0, not part of this
+  repository); follow its README. Our setup: NVIDIA's `.run` installer for the user-space parts, the patched kernel
+  modules registered with DKMS so that kernel updates rebuild them.
+- **Secure Boot:** the kernel modules must be signed. With Ubuntu's DKMS, enroll its signing key once
+  (`sudo mokutil --import /var/lib/shim-signed/mok/MOK.der`, reboot, confirm in the blue MOK screen), or turn Secure
+  Boot off.
+
+Check before building: `cat /proc/driver/nvidia/version` should report 470.256.02, and `nvidia-smi` should list the
+card. The 470 driver supports CUDA up to 11.4, so the CUDA 10.2 toolkit runs on it without its own driver.
 
 ## Build
 
