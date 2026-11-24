@@ -1,8 +1,11 @@
 # Results
 
 Hardware: GeForce GTX 650 Ti (GK106, compute capability 3.0, 4 SMX, 1 GB GDDR5, ~86 GB/s), Intel i7-4770,
-NVIDIA 470.256.02, CUDA 10.2 toolkit, clang 22. Build: this patch series on llama.cpp v0.8.0. All numbers from the
-release gate and workload benchmark of that build (2026-11-22) unless noted. `-ngl 99 -fa off -t 1`.
+NVIDIA 470.256.02, CUDA 10.2 toolkit, clang 22. Build: this patch series on llama.cpp v0.8.0. Correctness and token
+generation are from the r29 release gate (2026-11-23), whose source this series reproduces exactly; so are the
+"This build" prompt numbers at the gate's micro-batch sizes (32, 64 and 128 below; the gate does not run -ub 64 on
+Qwen3-1.7B). The other sections were measured on the earlier clean-room build of the same kernels
+(2026-11-22), whose gate matched r29 within 1% on every model. `-ngl 99 -fa off -t 1`.
 
 ## Correctness (release gate)
 
@@ -15,15 +18,15 @@ release gate and workload benchmark of that build (2026-11-22) unless noted. `-n
 
 | Model | Quant | t/s |
 |---|---|---:|
-| LFM2.5-350M | Q4_K_M | 88.6 |
-| gemma-3-270m-it | Q4_K_M | 64.6 |
+| LFM2.5-350M | Q4_K_M | 88.0 |
+| gemma-3-270m-it | Q4_K_M | 64.0 |
 | FunctionGemma-270M | Q8_0 | 64.9 |
 | LFM2.5-350M | Q8_0 | 59.6 |
 | granite-4.0-350m | Q8_0 | 47.8 |
-| Qwen3-0.6B | Q4_K_M | 45.7 |
-| SmolLM2-360M-Instruct | Q8_0 | 44.7 |
-| Qwen2.5-0.5B-Instruct | Q8_0 | 38.7 |
-| Qwen2.5-Coder-0.5B-Instruct | Q8_0 | 38.7 |
+| Qwen3-0.6B | Q4_K_M | 45.6 |
+| SmolLM2-360M-Instruct | Q8_0 | 44.6 |
+| Qwen2.5-0.5B-Instruct | Q8_0 | 38.8 |
+| Qwen2.5-Coder-0.5B-Instruct | Q8_0 | 38.8 |
 | Qwen3.5-0.8B | Q4_K_M | 35.5 |
 | TinyLlama-1.1B-Chat | Q4_K_M | 34.7 |
 | Qwen3-0.6B | Q8_0 | 32.6 |
@@ -34,9 +37,9 @@ release gate and workload benchmark of that build (2026-11-22) unless noted. `-n
 | OLMo-2-0425-1B-Instruct | Q4_K_S | 28.1 |
 | Qwen2.5-Coder-1.5B-Instruct | Q3_K_S (imatrix) | 23.8 |
 | Qwen2.5-1.5B-Instruct | Q3_K_S (imatrix) | 23.8 |
-| SmolLM2-1.7B-Instruct | Q3_K_S (imatrix) | 23.5 |
+| SmolLM2-1.7B-Instruct | Q3_K_S (imatrix) | 23.4 |
 | Qwen3-1.7B | Q3_K_S (imatrix) | 23.2 |
-| granite-4.0-h-1b | Q3_K_S (imatrix) | 22.9 |
+| granite-4.0-h-1b | Q3_K_S (imatrix) | 22.8 |
 | LFM3-1.7B | Q3_K_M (imatrix) | 22.2 |
 | granite-4.0-1b | Q3_K_S (imatrix) | 22.2 |
 | NuExtract-2.0-2B | Q3_K_M | 22.1 |
@@ -60,8 +63,8 @@ release gate and workload benchmark of that build (2026-11-22) unless noted. `-n
 | Qwen3-1.7B Q3_K_S | 64 | 29.3 | 63.0 |
 | Qwen2.5-Coder-1.5B Q3_K_S | 32 | 26.2 | 32.4 |
 | LFM2.5-1.2B Q4_K_M | 64 | 41.6 | 95.4 |
-| Qwen3-0.6B Q8_0 | 128 | 321.6 | 321.6 |
-| LFM2.5-350M Q4_K_M | 128 | 615.8 | 615.7 |
+| Qwen3-0.6B Q8_0 | 128 | 321.6 | 321.7 |
+| LFM2.5-350M Q4_K_M | 128 | 615.8 | 615.6 |
 
 ## Agent-style calls (prompt of N tokens + 128 generated, modelled from measured pp and tg at depth)
 

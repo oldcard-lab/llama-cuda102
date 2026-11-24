@@ -19,7 +19,7 @@ that supports sm_30 (CUDA 10.2), using clang as the CUDA compiler, on top of the
 - A **FunctionGemma** tool-call parser for `llama-server --jinja`.
 
 Measured on a GeForce GTX 650 Ti (GK106, 1 GB) with an i7-4770: see [docs/RESULTS.md](docs/RESULTS.md).
-Examples: LFM2.5-350M Q4_K_M generates 88.6 tokens/s; Qwen3-1.7B (3-bit) 23.2 tokens/s; whisper small.en
+Examples: LFM2.5-350M Q4_K_M generates 88.0 tokens/s; Qwen3-1.7B (3-bit) 23.2 tokens/s; whisper small.en
 transcribes an 11 s clip in about 2.6 s; YOLOv3-tiny runs at 26.8 frames/s.
 
 ## Requirements
@@ -99,8 +99,9 @@ Reports from other cards are welcome as issues. For sm_35 / sm_37 today, see
 
 - BF16 operations run on the CPU (CUDA 10.2 has no BF16 support).
 - No flash attention; no CUDA graphs.
-- The prompt path's speed-up applies below compute capability 5.0 only; other GPUs are unaffected by this series
-  (every change is guarded by architecture or CUDA version).
+- The Kepler kernels and the prompt path only run below compute capability 5.0. The compatibility port (patches
+  0001-0002) targets old CUDA toolkits and old GPUs; it has been tested only on the GTX 650 Ti, so this build is not
+  meant for newer cards.
 
 ## Credits
 
