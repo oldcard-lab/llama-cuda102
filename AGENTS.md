@@ -10,4 +10,5 @@ nothing here may contain private details (host names, user paths, tracker URLs, 
 - `docs/`: RESULTS.md (numbers must come from a gated release), PROVENANCE.md, AI-USAGE.md.
 
 Rules: only the clean line goes here (see docs/PROVENANCE.md). Run the private-detail scan before every commit
-(`scripts/scan-private.sh`). Agents do not push this repository to any public host; the owner does.
+(`scripts/scan-private.sh`, kept in the private development copy only: its pattern list names private hosts).
+Agents do not push this repository to any public host; the owner does.
