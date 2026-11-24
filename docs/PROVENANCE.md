@@ -17,8 +17,11 @@ series adapts it to llama.cpp v0.8.0 (ggml 0.28.0). Of 142 hunks, 123 applied at
 agents adapted the 19 rejected hunks to the newer code. Patch 0001 retains 6uO as its Git author. An Anthropic
 Claude agent debugged the forward port and made the fixes in patch 0002.
 
-The resulting source tree is byte-identical to the r29 release on which every published result in RESULTS.md was
-measured, so those results are unchanged.
+Applied with `git am --keep-cr`, the series produces exactly the source of the r29 release on which every published
+result in RESULTS.md was measured, so those results are unchanged. (r29 was built from a snapshot of v0.8.0 that
+differs from upstream's tag only outside the build: it lacks a benchmark log and two Xcode files, and stores no
+executable bits. Every compiled source file is the same.) A build from this repository on the test card passed the
+same checks: llama.cpp's GPU op tests, the strict kernel checker, and matching speed.
 
 ## History
 
