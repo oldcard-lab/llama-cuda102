@@ -1,12 +1,14 @@
-From 147a75520a42a8eae7fd77ee507f8f3a329c0156 Mon Sep 17 00:00:00 2001
+From 52de8b925b72aa3c18cc732db1357e3c2178590f Mon Sep 17 00:00:00 2001
 From: oldcard-lab <oldcard-lab@localhost>
 Date: Tue, 24 Nov 2026 12:09:22 -0600
 Subject: [PATCH 2/5] cuda: fixes to the sm_30 port on v0.8.0
 
-cuda port: bf16 shim for __float22bfloat162_rn; skip duplicate bf16 mmf instances on CUDA<11
-cuda port: graph_compute ran nothing without CUDA graphs (patch wrapped it in USE_CUDA_GRAPH); fix f32-output rule
-cuda port: restore upstream f32-output rule, add no-fast-fp16 NVIDIA case
-cuda port: classic FP32 cuBLAS GEMMs below cc 5.0 (Ex variants ARCH_MISMATCH); decline BF16 ops on CUDA<11
+- bf16: a shim for __float22bfloat162_rn, and the duplicate bf16 mmf instances skipped on CUDA < 11.
+- Graph compute: the port wrapped the whole of ggml_backend_cuda_graph_compute in USE_CUDA_GRAPH, so with CUDA
+  graphs off nothing ran; upstream's function is restored.
+- F32 output: upstream's rule restored, plus a case for NVIDIA GPUs without fast fp16.
+- cuBLAS: classic FP32 GEMMs below compute capability 5.0 (the Ex variants fail with ARCH_MISMATCH); BF16 ops
+  declined on CUDA < 11.
 ---
  ggml/src/ggml-cuda/ggml-cuda.cu   | 70 +++++++++++++++++++++++++++----
  ggml/src/ggml-cuda/mmf.cuh        | 16 +++++--

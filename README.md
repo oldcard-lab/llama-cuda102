@@ -8,7 +8,8 @@ with compute capability 3.0 (GeForce GTX 600 / 700 series cards such as the GTX 
 plus Kepler-tuned kernels that make small language models, speech and vision models practical on a 1-2 GB card.
 
 Current CUDA releases dropped Kepler long ago. This series builds llama.cpp's CUDA backend with the last toolkit
-that supports sm_30 (CUDA 10.2), using clang as the CUDA compiler, and adds:
+that supports sm_30 (CUDA 10.2), using clang as the CUDA compiler, on top of the old-GPU CUDA port by 6uO (see
+"Credits" below), and adds:
 
 - **Kepler matrix-vector kernels** for token generation (Q3_K, Q4_K, Q5_K, Q6_K, Q8_0, Q5_0, IQ3_XXS, F16) and the
   attention matvecs, 1.8-3.3x the stock CUDA kernels on this hardware.
@@ -60,7 +61,8 @@ scripts/test.sh  work ~/cuda-10.2                # correctness checks on the GPU
 ```
 
 The binaries are in `work/llama.cpp/build/bin` (`llama-cli`, `llama-server`, `llama-completion`, `llama-bench`).
-The series applies to llama.cpp **v0.8.0** (commit `8642541b255bfb5dc39cd351a178be09013a55d6`) with `git am`.
+The series applies to llama.cpp **v0.8.0** (commit `8642541b255bfb5dc39cd351a178be09013a55d6`) with `git am --keep-cr`
+(one file in patch 0003 has CRLF line endings; `scripts/build.sh` does this for you).
 
 ## Using it
 
@@ -100,6 +102,20 @@ Reports from other cards are welcome as issues. For sm_35 / sm_37 today, see
 - The prompt path's speed-up applies below compute capability 5.0 only; other GPUs are unaffected by this series
   (every change is guarded by architecture or CUDA version).
 
+## Credits
+
+- **6uO**: the old-GPU CUDA port this series is built on (patch 0001), from llama.cpp discussion
+  [#29961](https://github.com/ggml-org/llama.cpp/discussions/29961), released under the MIT license.
+  Forward-ported to v0.8.0 here.
+- **This project (oldcard-lab)**: the fixes to the port (0002), the Kepler kernels and prompt path (0003), the
+  im2col path (0004), the FunctionGemma parser (0005), the scripts and the strict kernel checker.
+- **The ggml authors**: llama.cpp and ggml themselves (MIT).
+
+Details per patch: [docs/PROVENANCE.md](docs/PROVENANCE.md). The
+[kepler-llama-community-patch](https://github.com/benaiahehud/kepler-llama-community-patch) repository is this
+project's earlier development line: the same patches applied to a full llama.cpp tree. It is also where 6uO's
+further ports may land.
+
 ## How it was made: mostly by AI
 
 AI coding agents did most of the engineering here, arguably all of the heavy lifting: the kernels, the forward port of
@@ -107,12 +123,6 @@ AI coding agents did most of the engineering here, arguably all of the heavy lif
 and approved each direction. Details, and the safeguards that do not depend on trusting the agents, are in
 [docs/AI-USAGE.md](docs/AI-USAGE.md). The strict kernel checks follow Wafer's
 [field guide to reward hacking in AI kernel generation](https://www.wafer.ai/blog/reward-hacks-field-guide).
-
-The compatibility layer is 6uO's port from llama.cpp discussion
-[#29961](https://github.com/ggml-org/llama.cpp/discussions/29961) (patch 0001, MIT), forward-ported to v0.8.0, with
-this project's fixes on top (patch 0002); see [docs/PROVENANCE.md](docs/PROVENANCE.md). The
-[kepler-llama-community-patch](https://github.com/benaiahehud/kepler-llama-community-patch) repository holds the same
-code as a full llama.cpp tree and is where 6uO's further ports may land.
 
 ## Security
 

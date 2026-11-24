@@ -1,12 +1,15 @@
-From fb2d3a4660c3f5b9a1a8931edb794b617055f2f9 Mon Sep 17 00:00:00 2001
+From b5ea0587871a94eb1b885fc955ddd6e2de33290e Mon Sep 17 00:00:00 2001
 From: oldcard-lab <oldcard-lab@localhost>
 Date: Tue, 24 Nov 2026 12:10:17 -0600
 Subject: [PATCH 3/5] cuda: Kepler (sm_30) matrix-vector and attention kernels,
  prompt path and dispatch
 
-Adds Kepler matrix-vector and attention kernels for Q3_K, Q4_K, Q5_0, Q5_K, Q6_K, Q8_0 and IQ3_XXS, including multi-column paths and dispatch. Adds prompt processing paths.
-
-GGML_CUDA_KEPLER_MMV controls matrix-vector kernels, GGML_CUDA_KEPLER_PP controls prompt processing, and GGML_CUDA_KEPLER_TRACE enables kernel tracing.
+- Matrix-vector kernels for token generation on Kepler (mmvk) for Q3_K, Q4_K, Q5_0, Q5_K, Q6_K, Q8_0, IQ3_XXS and
+  F16, including multi-column Q3_K paths, and the attention matrix-vector products (non-flash).
+- A faster prompt path below compute capability 5.0: row-chunked dequantization and token columns padded so that
+  cuBLAS 10.2 picks its fast sm_30 GEMM kernel.
+- Switches: GGML_CUDA_KEPLER_MMV (matrix-vector kernels), GGML_CUDA_KEPLER_PP (prompt path),
+  GGML_CUDA_KEPLER_TRACE=1 (print which kernel ran).
 ---
  ggml/src/ggml-cuda/ggml-cuda.cu |  115 +-
  ggml/src/ggml-cuda/mmvk.cu      | 3991 +++++++++++++++++++++++++++++++

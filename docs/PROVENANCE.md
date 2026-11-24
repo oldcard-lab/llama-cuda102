@@ -23,8 +23,8 @@ measured, so those results are unchanged.
 ## History
 
 The original port's license was unknown, so patches 0001-0002 were first developed as a clean-room rewrite. After
-6uO granted the port under MIT, the owner chose to build on 6uO's work, which was developed and tested on the card
-from the start, and retired the rewrite. The rewrite remains in this repository's Git history.
+6uO granted the port under MIT, the owner chose to build on 6uO's port, the base this project had been developed
+and tested on from the start, and retired the rewrite. The rewrite remains in this repository's Git history.
 
 ## Third-party components
 

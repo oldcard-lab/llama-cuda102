@@ -1,4 +1,4 @@
-From d52653289396d74c2add386e3ed906a231312298 Mon Sep 17 00:00:00 2001
+From 1a5579bfd5d0176db303a92064f21b0ad54b2071 Mon Sep 17 00:00:00 2001
 From: oldcard-lab <oldcard-lab@localhost>
 Date: Tue, 24 Nov 2026 12:10:17 -0600
 Subject: [PATCH 4/5] cuda: Kepler im2col path (GGML_CUDA_KEPLER_IM2COL)

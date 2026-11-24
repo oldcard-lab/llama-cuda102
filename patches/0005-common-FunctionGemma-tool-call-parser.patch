@@ -1,4 +1,4 @@
-From 68bec0cdf69b9c9205cbc05216a8e793d45abc1e Mon Sep 17 00:00:00 2001
+From 49c94287558dfb7fc8c6003811ed6bca31dbc975 Mon Sep 17 00:00:00 2001
 From: oldcard-lab <oldcard-lab@localhost>
 Date: Tue, 24 Nov 2026 12:10:17 -0600
 Subject: [PATCH 5/5] common: FunctionGemma tool-call parser

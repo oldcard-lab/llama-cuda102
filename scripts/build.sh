@@ -30,8 +30,16 @@ if [ ! -d "$SRC/.git" ]; then
   git clone --branch "$BASE_TAG" --depth 1 "$UPSTREAM" "$SRC"
 fi
 [ "$(git -C "$SRC" rev-list -n 1 "$BASE_TAG")" = "$BASE_COMMIT" ] || { echo "$BASE_TAG is not $BASE_COMMIT"; exit 3; }
-if ! git -C "$SRC" log --format=%s | grep -q 'Kepler im2col path'; then
+subjects=$(git -C "$SRC" log --format=%s)
+if echo "$subjects" | grep -q '6uO, llama.cpp discussion #29961' &&
+   echo "$subjects" | grep -q 'FunctionGemma tool-call parser'; then
+  :  # this series is already applied
+elif [ "$(git -C "$SRC" rev-parse HEAD)" = "$BASE_COMMIT" ]; then
+  # --keep-cr: one file in patch 0003 has CRLF line endings, which plain `git am` would strip
   git -C "$SRC" -c user.name=oldcard-lab -c user.email=oldcard-lab@localhost am --keep-cr "$HERE"/patches/*.patch
+else
+  echo "$SRC has other commits on top of $BASE_TAG (an older or partly applied series). Delete it and run again."
+  exit 4
 fi
 
 cmake -S "$SRC" -B "$SRC/build" -G Ninja -DCMAKE_BUILD_TYPE=Release \

@@ -1,4 +1,4 @@
-From 9ee8b60e6cf65f305ef7938e93b58eb5744e89f1 Mon Sep 17 00:00:00 2001
+From 87530b02b4eeb1ab3ad00ae7b4398a85dc54b382 Mon Sep 17 00:00:00 2001
 From: 6uO <175408817+6uO@users.noreply.github.com>
 Date: Tue, 24 Nov 2026 12:09:22 -0600
 Subject: [PATCH 1/5] cuda: sm_30 / CUDA 10.2 / clang port for old NVIDIA GPUs

@@ -1,13 +1,16 @@
-Patch 0001 is 6uO's work, Copyright (c) 2026 6uO, released under the MIT license.
-Original discussion: https://github.com/ggml-org/llama.cpp/discussions/29961
-MIT license grant: https://github.com/ggml-org/llama.cpp/discussions/29961#discussioncomment-19833442
+This project patches llama.cpp (https://github.com/ggml-org/llama.cpp), release v0.8.0. The patches contain code
+from three sources, all under the MIT license reproduced below:
 
-This project patches llama.cpp (https://github.com/ggml-org/llama.cpp), release v0.8.0.
-The patches modify files of llama.cpp and ggml, which are distributed under the following license:
+- llama.cpp and ggml: Copyright (c) 2023-2026 The ggml authors.
+- Patch 0001, the old-GPU CUDA port by 6uO: Copyright (c) 2026 6uO.
+  Original: https://github.com/ggml-org/llama.cpp/discussions/29961
+  MIT grant: https://github.com/ggml-org/llama.cpp/discussions/29961#discussioncomment-19833442
+- This project's own changes: Copyright (c) 2026 The oldcard-lab authors (see LICENSE).
 
 MIT License
 
 Copyright (c) 2023-2026 The ggml authors
+Copyright (c) 2026 6uO
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
