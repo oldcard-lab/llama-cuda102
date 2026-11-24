@@ -2,8 +2,8 @@
 // against reward-hacked AI-written kernels. test-backend-ops judges MUL_MAT by NMSE <= 5e-4 over ALL
 // outputs, so a handful of wrong or unwritten rows in a large matrix pass it. This tool checks, per case:
 //   1. NaN-poisoned output: dst is filled with NaN before every run, so a row the kernel never writes fails.
-//   2. Bitwise-identical repeat: the same inputs run twice must give identical bits (races, uninitialised reads).
-//   3. Per-element error against an fp64 reference computed from ggml's own dequantisation:
+//   2. Bitwise-identical repeat: the same inputs run twice must give identical bits (races, uninitialized reads).
+//   3. Per-element error against an fp64 reference computed from ggml's own dequantization:
 //      |gpu - ref| <= tol * sum_j |w_j * y_j| for EVERY row (tol 2e-5; a wrong row errs by ~1.0 x that sum).
 //   4. Weights-buffer mode (--weights): marks the buffer GGML_BACKEND_BUFFER_USAGE_WEIGHTS so caching or
 //      repacking paths run; cases reuse freed addresses with NEW contents, which catches stale caches.
@@ -30,7 +30,7 @@ struct shape { ggml_type type; int64_t m, k, ch; int64_t ch_a = 0, off = 0, n = 
 static int run_case(ggml_backend_t be, const shape & s, bool weights, std::mt19937 & rng, double & worst) {
     const int64_t m = s.m, k = s.k, ch = s.ch, ch_a = s.ch_a ? s.ch_a : s.ch, off = s.off, mt = m + off, n = s.n;
     std::normal_distribution<float> nd(0.0f, 1.0f);
-    // weights (k x mt per weight channel), quantised with ggml's reference quantiser
+    // weights (k x mt per weight channel), quantized with ggml's reference quantizer
     std::vector<float> wf(k * mt * ch_a), yf(k * n * ch);
     for (auto & v : wf) v = nd(rng);
     for (auto & v : yf) v = nd(rng);
@@ -38,13 +38,13 @@ static int run_case(ggml_backend_t be, const shape & s, bool weights, std::mt199
     std::vector<uint8_t> wq(row_sz * mt * ch_a);
     ggml_quantize_chunk(s.type, wf.data(), wq.data(), 0, mt * ch_a, k, nullptr);
     if (s.type == GGML_TYPE_Q8_0) {
-        // uniform int8 quants, -128 and +127 included (the quantiser never emits -128): every byte lane sees
-        // both sign boundaries; d stays the quantiser's
+        // uniform int8 quants, -128 and +127 included (the quantizer never emits -128): every byte lane sees
+        // both sign boundaries; d stays the quantizer's
         std::uniform_int_distribution<int> bd(-128, 127);
         const size_t bs = ggml_type_size(s.type);
         for (size_t b = 0; b < wq.size() / bs; ++b) for (size_t j = 2; j < bs; ++j) wq[b * bs + j] = (uint8_t) (int8_t) bd(rng);
     }
-    // fp64 reference from ggml's own dequantisation of the quantised bytes
+    // fp64 reference from ggml's own dequantization of the quantized bytes
     const auto * tt = ggml_get_type_traits(s.type);
     std::vector<float> wd(k);
     std::vector<double> ref(m * n * ch), mag(m * n * ch);
@@ -106,7 +106,7 @@ int main(int argc, char ** argv) {
     ggml_backend_t be = ggml_backend_cuda_init(0);
     if (!be) { fprintf(stderr, "no CUDA backend\n"); return 2; }
     // types to check: MMVK_CHECK_TYPES="q4_K,q6_K" (default) or e.g. "q4_K,q6_K,q8_0". Only list a type once
-    // mmvk handles it: the stock kernels quantise y to q8_1 and miss the 2e-5 limit by design.
+    // mmvk handles it: the stock kernels quantize y to q8_1 and miss the 2e-5 limit by design.
     std::vector<ggml_type> types;
     {
         const char * env = std::getenv("MMVK_CHECK_TYPES");
@@ -138,7 +138,7 @@ int main(int argc, char ** argv) {
                 cases.push_back({ t, hd, kv, 16, 8, 0 });
             }
             for (int64_t kv : { 5, 300 }) { cases.push_back({ t, kv, 64, 16, 2, 0 }); cases.push_back({ t, 64, kv, 16, 2, 0 }); }
-            continue;   // the quantised-weight shapes below do not apply
+            continue;   // the quantized-weight shapes below do not apply
         }
         // the model's shapes, the head, tails (rows not a multiple of 2/4/8/16), odd and tiny block counts,
         // and channel batches (ne2 > 1)
@@ -163,7 +163,7 @@ int main(int argc, char ** argv) {
         }
     }
     // r21: multi-column cases (n = 2..8) for the types listed in MMVK_CHECK_NCOLS (e.g. "q3_K"): only once mmvk
-    // takes ne11 > 1 for that type; the stock multi-column kernels quantise y to q8_1 and miss 2e-5 by design.
+    // takes ne11 > 1 for that type; the stock multi-column kernels quantize y to q8_1 and miss 2e-5 by design.
     {
         const char * env = std::getenv("MMVK_CHECK_NCOLS");
         const std::string list = env ? env : "";

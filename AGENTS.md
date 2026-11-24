@@ -1,4 +1,4 @@
-# kepler-llama
+# llama-cuda102 (oldcard-lab)
 
 Public-facing repository for the Kepler (sm_30) llama.cpp patch series. It is prepared for publishing by the owner:
 nothing here may contain private details (host names, user paths, tracker URLs, credentials).

@@ -3,7 +3,7 @@
 ## Why this document exists
 
 This project began on top of a community patch posted in a llama.cpp GitHub discussion that adds old-GPU
-(Fermi/Kepler) support. That patch states no licence. To publish under MIT without depending on it, the
+(Fermi/Kepler) support. That patch stated no license at the time. To publish under MIT without depending on it, the
 compatibility layer in this series was **rewritten clean-room**, and the project's own kernels were ported onto the
 clean layer. The earlier, community-based line of development is not part of this repository.
 
