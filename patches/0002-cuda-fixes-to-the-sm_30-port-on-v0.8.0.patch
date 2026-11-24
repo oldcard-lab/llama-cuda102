@@ -1,0 +1,205 @@
+From 147a75520a42a8eae7fd77ee507f8f3a329c0156 Mon Sep 17 00:00:00 2001
+From: oldcard-lab <oldcard-lab@localhost>
+Date: Tue, 24 Nov 2026 12:09:22 -0600
+Subject: [PATCH 2/5] cuda: fixes to the sm_30 port on v0.8.0
+
+cuda port: bf16 shim for __float22bfloat162_rn; skip duplicate bf16 mmf instances on CUDA<11
+cuda port: graph_compute ran nothing without CUDA graphs (patch wrapped it in USE_CUDA_GRAPH); fix f32-output rule
+cuda port: restore upstream f32-output rule, add no-fast-fp16 NVIDIA case
+cuda port: classic FP32 cuBLAS GEMMs below cc 5.0 (Ex variants ARCH_MISMATCH); decline BF16 ops on CUDA<11
+---
+ ggml/src/ggml-cuda/ggml-cuda.cu   | 70 +++++++++++++++++++++++++++----
+ ggml/src/ggml-cuda/mmf.cuh        | 16 +++++--
+ ggml/src/ggml-cuda/vendors/cuda.h |  1 +
+ 3 files changed, 76 insertions(+), 11 deletions(-)
+
+diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
+index 64843fc..c79dde6 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -1574,12 +1574,13 @@ static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const
+     const void * beta = traits::get_beta();
+ 
+     const int cc = ggml_cuda_info().devices[ctx.device].cc;
+-    // unconfirmed patch: FP32 FP16 BF16 priority?
++    // Kepler port: upstream rules, plus f32 output on GPUs without fast fp16 arithmetic (sm_30).
++    // (The community patch had `cc == !fast_fp16_hardware_available(cc)`, always false, and narrowed BF16.)
+     bool prefer_f32_output = false;
+     if (compute_type == GGML_TYPE_F16) {
+-        prefer_f32_output = cc == !fast_fp16_hardware_available(cc) || GGML_CUDA_CC_IS_RDNA4(cc) || GGML_CUDA_CC_IS_CDNA(cc);
++        prefer_f32_output = cc == GGML_CUDA_CC_VOLTA || (GGML_CUDA_CC_IS_NVIDIA(cc) && !fast_fp16_hardware_available(cc)) || GGML_CUDA_CC_IS_RDNA4(cc) || GGML_CUDA_CC_IS_CDNA(cc);
+     } else if (compute_type == GGML_TYPE_BF16) {
+-        prefer_f32_output = (GGML_CUDA_CC_IS_NVIDIA(cc) && cc < GGML_CUDA_CC_AMPERE/*untest*/) || (GGML_CUDA_CC_IS_AMD(cc) && !GGML_CUDA_CC_IS_RDNA3(cc) && !GGML_CUDA_CC_IS_CDNA(cc)) || (GGML_CUDA_CC_IS_MTHREADS(cc) && cc < GGML_CUDA_CC_QY2);
++        prefer_f32_output = !GGML_CUDA_CC_IS_RDNA3(cc) && !GGML_CUDA_CC_IS_CDNA(cc);
+     }
+ 
+     if (prefer_f32_output) {
+@@ -1608,7 +1609,45 @@ static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const
+     // Theoretically cublasGemmStridedBatchedEx would always work, even for a single matrix.
+     // However, for some old NVIDIA and AMD GPUs the strided/Ex GEMM is much slower,
+     //     probably because the internal kernel selection logic is suboptimal.
+-    if (compute_type == GGML_TYPE_F32 && ne12 == 1 && ne13 == 1) {
++    // Kepler port: cuBLAS rejects the *Ex GEMMs below cc 5.0 (CUBLAS_STATUS_ARCH_MISMATCH, measured on
++    // a GTX 650 Ti with cuBLAS 10.2). ggml_cuda_mul_mat_cublas forces F32 compute there; use the classic
++    // single-precision batched entry points instead of GemmStridedBatchedEx / GemmBatchedEx.
++    const bool legacy_sgemm = compute_type == GGML_TYPE_F32 && GGML_CUDA_CC_IS_NVIDIA(cc) && cc < 500;
++    if (legacy_sgemm && !(ne12 == 1 && ne13 == 1) && r2 == 1 && r3 == 1 && is_src0_cont_2 && is_src1_cont_2) {
++        const int64_t sma = ne02 == 1 ? s03 : s02;
++        const int64_t smb = ne12 == 1 ? s13 : s12;
++        CUBLAS_CHECK(
++        cublasSgemmStridedBatched(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
++                ne01, ne11, ne10,
++                (const float *) alpha, (const float *) src0_ptr, s01, sma,
++                                       (const float *) src1_ptr, s11, smb,
++                (const float *) beta,  (float       *)  dst_ptr, ldc, ne1*ldc,
++                ne12*ne13));
++    } else if (legacy_sgemm && !(ne12 == 1 && ne13 == 1)) {
++        const int64_t ne23 = ne12*ne13;
++        ggml_cuda_pool_alloc<const void *> ptrs_src(ctx.pool(), 2*ne23);
++        ggml_cuda_pool_alloc<      void *> ptrs_dst(ctx.pool(), 1*ne23);
++        const size_t src_type_size = sizeof(cuda_t);
++        const dim3 block_dims(16, 16);
++        const dim3 grid_dims((ne13 + 15) / 16, (ne12 + 15) / 16);
++        k_compute_batched_ptrs<<<grid_dims, block_dims, 0, main_stream>>>(
++                src0_ptr, src1_ptr, dst_ptr,
++                ptrs_src.get(), ptrs_dst.get(),
++                ne12, ne13,
++                ne23,
++                s02*src_type_size, s03*src_type_size,
++                s12*src_type_size, s13*src_type_size,
++                nbd2, nbd3,
++                r2, r3);
++        CUDA_CHECK(cudaGetLastError());
++        CUBLAS_CHECK(
++        cublasSgemmBatched(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
++                ne01, ne11, ne10,
++                (const float *) alpha, (const float **) (ptrs_src.get() + 0*ne23), s01,
++                                       (const float **) (ptrs_src.get() + 1*ne23), s11,
++                (const float *) beta,  (      float **) (ptrs_dst.get() + 0*ne23), ldc,
++                ne23));
++    } else if (compute_type == GGML_TYPE_F32 && ne12 == 1 && ne13 == 1) {
+         CUBLAS_CHECK(
+             cublasSgemm(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
+                     ne01, ne11, ne10,
+@@ -1727,6 +1766,11 @@ static void ggml_cuda_mul_mat_cublas(ggml_backend_cuda_context & ctx, const ggml
+         }
+     }
+ 
++    // Kepler port: only the classic FP32 cuBLAS GEMMs run below cc 5.0 (see ggml_cuda_mul_mat_cublas_impl).
++    if (GGML_CUDA_CC_IS_NVIDIA(cc) && cc < 500) {
++        compute_type = GGML_TYPE_F32;
++    }
++
+     constexpr size_t max_src0_convert_size = 512ull * 1024 * 1024;
+     const size_t src0_f32_size = ggml_nelements(src0) * sizeof(float);
+ 
+@@ -4914,8 +4958,6 @@ static bool ggml_cuda_graph_set_enabled(ggml_backend_cuda_context * cuda_ctx, co
+ #endif // USE_CUDA_GRAPH
+ 
+ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
+-// unconfirmed patch: CUDA_GRAPH code scope?
+-#ifdef USE_CUDA_GRAPH
+     ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
+ 
+     ggml_cuda_set_device(cuda_ctx->device);
+@@ -4924,6 +4966,7 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend,
+     bool cuda_graph_update_required = false;
+     const void * graph_key = nullptr;
+ 
++#ifdef USE_CUDA_GRAPH
+     graph_key = ggml_cuda_graph_get_key(cgraph);
+ 
+     ggml_cuda_graph_set_enabled(cuda_ctx, graph_key);
+@@ -4960,6 +5003,7 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend,
+             }
+         }
+     }
++#endif // USE_CUDA_GRAPH
+ 
+     if (use_cuda_graph && cuda_graph_update_required) {
+         // Start CUDA graph capture
+@@ -4972,7 +5016,6 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend,
+     }
+ 
+     ggml_cuda_graph_evaluate_and_capture(cuda_ctx, cgraph, use_cuda_graph, cuda_graph_update_required, graph_key);
+-#endif // USE_CUDA_GRAPH
+ 
+     return GGML_STATUS_SUCCESS;
+ }
+@@ -5665,6 +5708,19 @@ static ggml_backend_buffer_type_t ggml_backend_cuda_device_get_host_buffer_type(
+ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) {
+     ggml_backend_cuda_device_context * dev_ctx = (ggml_backend_cuda_device_context *) dev->context;
+ 
++#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && defined(CUDART_VERSION) && CUDART_VERSION < 11000
++    // Kepler port: without cuda_bf16.h, vendors/cuda.h aliases nv_bfloat16 to half, which would read
++    // real BF16 data as FP16. Decline every BF16 op so the scheduler runs it on another backend.
++    if (op->type == GGML_TYPE_BF16) {
++        return false;
++    }
++    for (int i = 0; i < GGML_MAX_SRC; i++) {
++        if (op->src[i] && op->src[i]->type == GGML_TYPE_BF16) {
++            return false;
++        }
++    }
++#endif
++
+     // check if all the sources are allocated on this device
+     for (int i = 0; i < GGML_MAX_SRC; i++) {
+         if (op->src[i] && op->src[i]->buffer && ggml_backend_buft_is_cuda(op->src[i]->buffer->buft)) {
+diff --git a/ggml/src/ggml-cuda/mmf.cuh b/ggml/src/ggml-cuda/mmf.cuh
+index 429c887..5b6db52 100644
+--- a/ggml/src/ggml-cuda/mmf.cuh
++++ b/ggml/src/ggml-cuda/mmf.cuh
+@@ -877,6 +877,14 @@ static void mul_mat_f_switch_rows_per_block(
+     }
+ }
+ 
++// Kepler/CUDA<11 port: without cuda_bf16.h, vendors/cuda.h aliases nv_bfloat162 to half2, so the bf16
++// instantiations would duplicate the half2 ones.
++#if defined(GGML_USE_HIP) || defined(GGML_USE_MUSA) || CUDART_VERSION >= 11000
++#define DECL_MMF_CASE_BF16(...) __VA_ARGS__
++#else
++#define DECL_MMF_CASE_BF16(...)
++#endif
++
+ #define DECL_MMF_CASE_HELPER(T, nrows_dst, ncols_dst) \
+     template void mul_mat_f_cuda<T, nrows_dst, ncols_dst>( \
+         const T * x, const float * y, const int32_t * ids, float * dst, \
+@@ -891,18 +899,18 @@ static void mul_mat_f_switch_rows_per_block(
+ #define DECL_MMF_CASE_EXTERN(ncols_dst) \
+     extern DECL_MMF_CASE_HELPER(float, MMF_ROWS_PER_BLOCK, ncols_dst) \
+     extern DECL_MMF_CASE_HELPER(half2, MMF_ROWS_PER_BLOCK, ncols_dst) \
+-    extern DECL_MMF_CASE_HELPER(nv_bfloat162, MMF_ROWS_PER_BLOCK, ncols_dst) \
++    DECL_MMF_CASE_BF16(extern DECL_MMF_CASE_HELPER(nv_bfloat162, MMF_ROWS_PER_BLOCK, ncols_dst)) \
+     extern DECL_MMF_CASE_HELPER(float, MMF_ROWS_PER_BLOCK_CDNA, ncols_dst) \
+     extern DECL_MMF_CASE_HELPER(half2, MMF_ROWS_PER_BLOCK_CDNA, ncols_dst) \
+-    extern DECL_MMF_CASE_HELPER(nv_bfloat162, MMF_ROWS_PER_BLOCK_CDNA, ncols_dst)
++    DECL_MMF_CASE_BF16(extern DECL_MMF_CASE_HELPER(nv_bfloat162, MMF_ROWS_PER_BLOCK_CDNA, ncols_dst))
+ 
+ #define DECL_MMF_CASE(ncols_dst) \
+     DECL_MMF_CASE_HELPER(float, MMF_ROWS_PER_BLOCK, ncols_dst) \
+     DECL_MMF_CASE_HELPER(half2, MMF_ROWS_PER_BLOCK, ncols_dst) \
+-    DECL_MMF_CASE_HELPER(nv_bfloat162, MMF_ROWS_PER_BLOCK, ncols_dst) \
++    DECL_MMF_CASE_BF16(DECL_MMF_CASE_HELPER(nv_bfloat162, MMF_ROWS_PER_BLOCK, ncols_dst)) \
+     DECL_MMF_CASE_HELPER(float, MMF_ROWS_PER_BLOCK_CDNA, ncols_dst) \
+     DECL_MMF_CASE_HELPER(half2, MMF_ROWS_PER_BLOCK_CDNA, ncols_dst) \
+-    DECL_MMF_CASE_HELPER(nv_bfloat162, MMF_ROWS_PER_BLOCK_CDNA, ncols_dst)
++    DECL_MMF_CASE_BF16(DECL_MMF_CASE_HELPER(nv_bfloat162, MMF_ROWS_PER_BLOCK_CDNA, ncols_dst))
+ 
+ DECL_MMF_CASE_EXTERN(1);
+ DECL_MMF_CASE_EXTERN(2);
+diff --git a/ggml/src/ggml-cuda/vendors/cuda.h b/ggml/src/ggml-cuda/vendors/cuda.h
+index e21bc3c..69fcd3b 100644
+--- a/ggml/src/ggml-cuda/vendors/cuda.h
++++ b/ggml/src/ggml-cuda/vendors/cuda.h
+@@ -28,6 +28,7 @@
+ 	#define __bfloat162float __half2float
+ 	#define __float2bfloat16 __float2half
+ 	#define __bfloat1622float2 __half22float2
++	#define __float22bfloat162_rn __float22half2_rn
+ 	#define nv_bfloat16 half
+ 	#define nv_bfloat162 half2
+ 	#define CUDA_R_16BF CUDA_R_16F
+-- 
+2.56.1.windows.1
+

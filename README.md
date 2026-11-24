@@ -102,16 +102,17 @@ Reports from other cards are welcome as issues. For sm_35 / sm_37 today, see
 
 ## How it was made: mostly by AI
 
-AI coding agents did most of the engineering here, arguably all of the heavy lifting: the kernels, the clean-room
-compatibility layer, the test tools and these documents. A human owner set the goals, provided the hardware and
-approved each direction. Details, and the safeguards that do not depend on trusting the agents, are in
+AI coding agents did most of the engineering here, arguably all of the heavy lifting: the kernels, the forward port of
+6uO's compatibility layer, the test tools and these documents. A human owner set the goals, provided the hardware
+and approved each direction. Details, and the safeguards that do not depend on trusting the agents, are in
 [docs/AI-USAGE.md](docs/AI-USAGE.md). The strict kernel checks follow Wafer's
 [field guide to reward hacking in AI kernel generation](https://www.wafer.ai/blog/reward-hacks-field-guide).
 
-The compatibility layer (patches 0001-0002) was written clean-room from compiler errors and CUDA documentation;
-see [docs/PROVENANCE.md](docs/PROVENANCE.md). The project started on top of the old-GPU patch by 6uO in llama.cpp
-discussion [#29961](https://github.com/ggml-org/llama.cpp/discussions/29961); that earlier line is published
-separately as [kepler-llama-community-patch](https://github.com/benaiahehud/kepler-llama-community-patch).
+The compatibility layer is 6uO's port from llama.cpp discussion
+[#29961](https://github.com/ggml-org/llama.cpp/discussions/29961) (patch 0001, MIT), forward-ported to v0.8.0, with
+this project's fixes on top (patch 0002); see [docs/PROVENANCE.md](docs/PROVENANCE.md). The
+[kepler-llama-community-patch](https://github.com/benaiahehud/kepler-llama-community-patch) repository holds the same
+code as a full llama.cpp tree and is where 6uO's further ports may land.
 
 ## Security
 

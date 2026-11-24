@@ -31,7 +31,7 @@ if [ ! -d "$SRC/.git" ]; then
 fi
 [ "$(git -C "$SRC" rev-list -n 1 "$BASE_TAG")" = "$BASE_COMMIT" ] || { echo "$BASE_TAG is not $BASE_COMMIT"; exit 3; }
 if ! git -C "$SRC" log --format=%s | grep -q 'Kepler im2col path'; then
-  git -C "$SRC" -c user.name=oldcard-lab -c user.email=oldcard-lab@localhost am "$HERE"/patches/*.patch
+  git -C "$SRC" -c user.name=oldcard-lab -c user.email=oldcard-lab@localhost am --keep-cr "$HERE"/patches/*.patch
 fi
 
 cmake -S "$SRC" -B "$SRC/build" -G Ninja -DCMAKE_BUILD_TYPE=Release \

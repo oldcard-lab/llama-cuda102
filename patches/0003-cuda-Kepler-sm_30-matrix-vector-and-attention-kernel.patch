@@ -1,217 +1,22 @@
-From 4423cb7123e9209237da70c03fbfd537a8ec09ef Mon Sep 17 00:00:00 2001
-From: kepler-llama <kepler-llama@localhost>
-Date: Sun, 22 Nov 2026 22:31:37 -0600
+From fb2d3a4660c3f5b9a1a8931edb794b617055f2f9 Mon Sep 17 00:00:00 2001
+From: oldcard-lab <oldcard-lab@localhost>
+Date: Tue, 24 Nov 2026 12:10:17 -0600
 Subject: [PATCH 3/5] cuda: Kepler (sm_30) matrix-vector and attention kernels,
  prompt path and dispatch
 
-mmvk.cu: matrix-vector kernels for 1-8 token columns (Q3_K, Q4_K, Q5_K, Q6_K, Q8_0, Q5_0, IQ3_XXS, F16) and the
-attention matvecs (KQ, KQV), tuned for GTX 650 Ti class GPUs (CUDA 10.2, no dp4a, no fast FP16). Selection
-variables GGML_CUDA_KEPLER_* (auto by default; off restores the stock path). Prompt processing on cc < 5.0:
-row-chunked dequantization and token columns padded to 96 so cuBLAS picks its fast sm_30 kernel
-(GGML_CUDA_KEPLER_PP). F32 output for F16 compute without fast FP16; strided/pointer-array batched SGEMM below
-cc 5.0. Small dispatch adjustments in common.cuh, fattn-mma-f16.cuh, mmf.cuh, rope.cu, unary.cu.
+Adds Kepler matrix-vector and attention kernels for Q3_K, Q4_K, Q5_0, Q5_K, Q6_K, Q8_0 and IQ3_XXS, including multi-column paths and dispatch. Adds prompt processing paths.
+
+GGML_CUDA_KEPLER_MMV controls matrix-vector kernels, GGML_CUDA_KEPLER_PP controls prompt processing, and GGML_CUDA_KEPLER_TRACE enables kernel tracing.
 ---
- ggml/src/ggml-cuda/common.cuh        |   56 +-
- ggml/src/ggml-cuda/fattn-mma-f16.cuh |    6 +-
- ggml/src/ggml-cuda/ggml-cuda.cu      |  161 +-
- ggml/src/ggml-cuda/mmf.cuh           |   16 +-
- ggml/src/ggml-cuda/mmvk.cu           | 3991 ++++++++++++++++++++++++++
- ggml/src/ggml-cuda/mmvk.cuh          |   11 +
- ggml/src/ggml-cuda/rope.cu           |    6 +-
- ggml/src/ggml-cuda/unary.cu          |   14 +
- 8 files changed, 4235 insertions(+), 26 deletions(-)
+ ggml/src/ggml-cuda/ggml-cuda.cu |  115 +-
+ ggml/src/ggml-cuda/mmvk.cu      | 3991 +++++++++++++++++++++++++++++++
+ ggml/src/ggml-cuda/mmvk.cuh     |   11 +
+ 3 files changed, 4111 insertions(+), 6 deletions(-)
  create mode 100644 ggml/src/ggml-cuda/mmvk.cu
  create mode 100644 ggml/src/ggml-cuda/mmvk.cuh
 
-diff --git a/ggml/src/ggml-cuda/common.cuh b/ggml/src/ggml-cuda/common.cuh
-index 6b36ca9..779ace1 100644
---- a/ggml/src/ggml-cuda/common.cuh
-+++ b/ggml/src/ggml-cuda/common.cuh
-@@ -47,6 +47,8 @@
- #define CUDART_HMAX   11070 // CUDA 11.7, min. ver. for which __hmax and __hmax2 are known to work (may be higher than needed)
- #define CUDART_HMASK  12000 // CUDA 12.0, min. ver. for half2 -> uint mask comparisons
- 
-+#define GGML_CUDA_CC_KEPLER          300
-+#define GGML_CUDA_CC_MAXWELL3        530
- #define GGML_CUDA_CC_PASCAL          600
- #define GGML_CUDA_CC_DP4A            610 // minimum compute capability for __dp4a, an intrinsic for byte-wise dot products
- #define GGML_CUDA_CC_VOLTA           700
-@@ -126,9 +128,9 @@
- #endif  // !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && (CUDART_VERSION >= 12030 || (!(defined(_MSC_VER) && !defined(__clang__)) && CUDART_VERSION >= 11080))
- 
- static __device__ __forceinline__ void ggml_cuda_syncwarp() {
--#ifndef GGML_USE_HIP
-+#if !defined(GGML_USE_HIP) && (CUDART_VERSION > 8000 || !defined(CUDART_VERSION))
-     __syncwarp();
--#endif // GGML_USE_HIP
-+#endif
- }
- 
- static __device__ __forceinline__ void ggml_cuda_pdl_sync() {
-@@ -238,7 +240,7 @@ static const char * cu_get_error_str(CUresult err) {
- #define CU_CHECK(err) CUDA_CHECK_GEN(err, CUDA_SUCCESS, cu_get_error_str)
- #endif
- 
--#if !defined(GGML_USE_HIP)
-+#if !defined(GGML_USE_HIP) && (CUDART_VERSION > 8000 || !defined(CUDART_VERSION))
- #    define CUDA_SET_SHARED_MEMORY_LIMIT(kernel, nbytes)                                                       \
-         do {                                                                                                   \
-             static bool shared_memory_limit_raised[GGML_CUDA_MAX_DEVICES] = { false };                         \
-@@ -253,21 +255,26 @@ static const char * cu_get_error_str(CUresult err) {
-         do {                                             \
-             GGML_UNUSED(nbytes);                         \
-         } while (0)
--#endif // !defined(GGML_USE_HIP)
--
--#if CUDART_VERSION >= 11010 || defined(GGML_USE_MUSA)
--#define GGML_CUDA_ASSUME(x) __builtin_assume(x)
-+#endif // CUDA shared memory limit support
-+
-+#if CUDART_VERSION >= 11010 || defined(GGML_USE_MUSA) || defined(__clang__)
-+  #define GGML_CUDA_ASSUME(x) __builtin_assume(x)
-+#elif defined(_MSC_VER)
-+  #define GGML_CUDA_ASSUME(x) __assume(x)
-+#elif defined(__GNUC__)
-+  #define GGML_CUDA_ASSUME(x) if (!(x)) __builtin_unreachable();
- #else
--#define GGML_CUDA_ASSUME(x)
--#endif // CUDART_VERSION >= 11010
-+  #define GGML_CUDA_ASSUME(x)
-+#endif
- 
- #if (!defined(GGML_USE_HIP) && !defined(GGML_CUDA_NO_VMM)) || (defined(GGML_USE_HIP) && !defined(GGML_HIP_NO_VMM))
- #define GGML_USE_VMM
- #endif // (!defined(GGML_USE_HIP) && !defined(GGML_CUDA_NO_VMM)) || (defined(GGML_USE_HIP) && !defined(GGML_HIP_NO_VMM))
- 
--#if defined(GGML_USE_HIP) || defined(GGML_USE_MUSA) || __CUDA_ARCH__ >= GGML_CUDA_CC_PASCAL
-+#if defined(GGML_USE_HIP) || defined(GGML_USE_MUSA) || __CUDA_ARCH__ >= GGML_CUDA_CC_PASCAL || \
-+    (CUDART_VERSION >= 7050 && CUDART_VERSION < 11000 && __CUDA_ARCH__ >= GGML_CUDA_CC_MAXWELL3)
- #define FP16_AVAILABLE
--#endif // defined(GGML_USE_HIP) || defined(GGML_USE_MUSA) || __CUDA_ARCH__ >= GGML_CUDA_CC_PASCAL
-+#endif // defined(GGML_USE_HIP) || defined(GGML_USE_MUSA) || __CUDA_ARCH__ >= GGML_CUDA_CC_PASCAL || CUDA 7.5+ Maxwell 3
- 
- #if defined(FP16_AVAILABLE) && __CUDA_ARCH__ != 610
- #define FAST_FP16_AVAILABLE
-@@ -456,32 +463,45 @@ template<int width = WARP_SIZE>
- static __device__ __forceinline__ int warp_reduce_sum(int x) {
- #if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && __CUDA_ARCH__ >= GGML_CUDA_CC_AMPERE
-     return __reduce_add_sync(0xffffffff, x);
--#else
-+#elif __CUDA_ARCH__ >= GGML_CUDA_CC_KEPLER
- #pragma unroll
-     for (int offset = width/2; offset > 0; offset >>= 1) {
-         x += __shfl_xor_sync(0xffffffff, x, offset, width);
-     }
-     return x;
-+#else
-+    NO_DEVICE_CODE;
-+    return x;
- #endif // !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && __CUDA_ARCH__ >= GGML_CUDA_CC_AMPERE
- }
- 
- template<int width = WARP_SIZE>
- static __device__ __forceinline__ float warp_reduce_sum(float x) {
-+#if __CUDA_ARCH__ >= GGML_CUDA_CC_KEPLER
- #pragma unroll
-     for (int offset = width/2; offset > 0; offset >>= 1) {
-         x += __shfl_xor_sync(0xffffffff, x, offset, width);
-     }
-     return x;
-+#else
-+    NO_DEVICE_CODE;
-+    return x;
-+#endif
- }
- 
- template<int width = WARP_SIZE>
- static __device__ __forceinline__ float2 warp_reduce_sum(float2 a) {
-+#if __CUDA_ARCH__ >= GGML_CUDA_CC_KEPLER
- #pragma unroll
-     for (int offset = width/2; offset > 0; offset >>= 1) {
-         a.x += __shfl_xor_sync(0xffffffff, a.x, offset, width);
-         a.y += __shfl_xor_sync(0xffffffff, a.y, offset, width);
-     }
-     return a;
-+#else
-+    NO_DEVICE_CODE;
-+    return a;
-+#endif
- }
- 
- template<int width = WARP_SIZE>
-@@ -683,21 +703,33 @@ static __device__ __forceinline__ half2 ggml_cuda_hmax2(const half2 a, const hal
-     return half2(__hmax(a.x, b.x), __hmax(a.y, b.y));
- #elif CUDART_VERSION >= CUDART_HMAX
-     return __hmax2(a, b);
-+#else
-+#if CUDART_VERSION < 11000
-+    return make_half2(
-+        fmaxf( __low2float(a),  __low2float(b)),
-+        fmaxf(__high2float(a), __high2float(b))
-+    );
- #else
-     half2 ret;
-     reinterpret_cast<half&>(ret.x) = __float2half(fmaxf( __low2float(a),  __low2float(b)));
-     reinterpret_cast<half&>(ret.y) = __float2half(fmaxf(__high2float(a), __high2float(b)));
-     return ret;
- #endif
-+#endif
- }
- 
- template<int width = WARP_SIZE>
- static __device__ __forceinline__ half2 warp_reduce_max(half2 x) {
-+#if __CUDA_ARCH__ >= GGML_CUDA_CC_KEPLER || defined(GGML_USE_HIP)
- #pragma unroll
-    for (int offset = width/2; offset > 0; offset >>= 1) {
-        x = ggml_cuda_hmax2(x, __shfl_xor_sync(0xffffffff, x, offset, width));
-    }
-    return x;
-+#else
-+    NO_DEVICE_CODE;
-+    return x;
-+#endif
- }
- 
- #if (defined(CUDART_VERSION) && CUDART_VERSION < CUDART_HMASK) || defined(GGML_USE_HIP) || \
-diff --git a/ggml/src/ggml-cuda/fattn-mma-f16.cuh b/ggml/src/ggml-cuda/fattn-mma-f16.cuh
-index 296aa2b..96945a8 100644
---- a/ggml/src/ggml-cuda/fattn-mma-f16.cuh
-+++ b/ggml/src/ggml-cuda/fattn-mma-f16.cuh
-@@ -2077,27 +2077,31 @@ void ggml_cuda_flash_attn_ext_mma_f16_case(ggml_backend_cuda_context & ctx, ggml
-                 }
-             }
-         } else
--#endif // !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
-+#endif // CUDART_VERSION > 8000 || (!defined(CUDART_VERSION) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA))
-         {
-             constexpr bool use_sparse_kernel = false;
-             fattn_kernel = flash_attn_ext_f16<DKQ, DV, ncols1, ncols2, use_logit_softcap, V_is_K_view, use_sparse_kernel>;
- 
-+#if CUDART_VERSION > 8000 || (!defined(CUDART_VERSION) && !defined(GGML_USE_MUSA))
-             static bool shared_memory_limit_raised[GGML_CUDA_MAX_DEVICES] = {false};
-             if (!shared_memory_limit_raised[id]) {
-                 CUDA_CHECK(cudaFuncSetAttribute(reinterpret_cast<fattn_kernel_ptr_t>(fattn_kernel), cudaFuncAttributeMaxDynamicSharedMemorySize, nbytes_shared_total));
-                 shared_memory_limit_raised[id] = true;
-             }
-+#endif // CUDART_VERSION > 8000 || (!defined(CUDART_VERSION) && !defined(GGML_USE_MUSA))
-         }
-     } else {
-         constexpr bool use_logit_softcap = true;
-         constexpr bool use_sparse_kernel = false;
-         fattn_kernel = flash_attn_ext_f16<DKQ, DV, ncols1, ncols2, use_logit_softcap, V_is_K_view, use_sparse_kernel>;
- 
-+#if CUDART_VERSION > 8000 || (!defined(CUDART_VERSION) && !defined(GGML_USE_MUSA))
-         static bool shared_memory_limit_raised[GGML_CUDA_MAX_DEVICES] = {false};
-         if (!shared_memory_limit_raised[id]) {
-             CUDA_CHECK(cudaFuncSetAttribute(reinterpret_cast<fattn_kernel_ptr_t>(fattn_kernel), cudaFuncAttributeMaxDynamicSharedMemorySize, nbytes_shared_total));
-             shared_memory_limit_raised[id] = true;
-         }
-+#endif // CUDART_VERSION > 8000 || (!defined(CUDART_VERSION) && !defined(GGML_USE_MUSA))
-     }
- 
-     const bool async_kv_preload = nstages == 2 && !use_sparse;
 diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
-index b813408..da50362 100644
+index c79dde6..11dd259 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda.cu
 +++ b/ggml/src/ggml-cuda/ggml-cuda.cu
 @@ -32,6 +32,7 @@
@@ -222,21 +27,7 @@ index b813408..da50362 100644
  #include "ggml-cuda/mmvq.cuh"
  #include "ggml-cuda/moe-weighted-reduction.cuh"
  #include "ggml-cuda/norm.cuh"
-@@ -339,9 +340,13 @@ static ggml_cuda_device_info ggml_cuda_init() {
-         info.devices[id].smpb       = prop.sharedMemPerBlock;
-         info.devices[id].warp_size  = prop.warpSize;
- 
-+#if CUDART_VERSION > 8000 || (!defined(CUDART_VERSION) && !defined(GGML_USE_MUSA))
-         int supports_coop_launch = 0;
-         CUDA_CHECK(cudaDeviceGetAttribute(&supports_coop_launch, cudaDevAttrCooperativeLaunch, physical_id));
-         info.devices[id].supports_cooperative_launch = !!supports_coop_launch;
-+#else
-+        info.devices[id].supports_cooperative_launch = false;
-+#endif // CUDART_VERSION > 8000 || (!defined(CUDART_VERSION) && !defined(GGML_USE_MUSA))
- 
- #if defined(GGML_USE_HIP)
-         info.devices[id].smpbo = prop.sharedMemPerBlock;
-@@ -1474,6 +1479,29 @@ static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const
+@@ -1487,6 +1488,29 @@ static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const
      const int64_t ne_dst = ggml_nelements(dst);
      cudaStream_t main_stream = ctx.stream();
      cublasHandle_t cublas_h = ctx.cublas_handle();
@@ -266,7 +57,7 @@ index b813408..da50362 100644
  
      const size_t src0_ts = ggml_type_size(src0->type);
      GGML_ASSERT(nb00 == src0_ts);
-@@ -1500,6 +1528,11 @@ static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const
+@@ -1513,6 +1537,11 @@ static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const
  
      if (src0->type == compute_type) {
          src0_ptr = (const cuda_t *) src0->data;
@@ -278,7 +69,7 @@ index b813408..da50362 100644
      } else {
          src0_alloc.alloc(ggml_nelements(src0));
  
-@@ -1513,8 +1546,28 @@ static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const
+@@ -1526,8 +1555,28 @@ static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const
              s03 *= src0_bs;
          } else {
              const auto convert_func = traits::convert_nc(src0->type);
@@ -309,20 +100,15 @@ index b813408..da50362 100644
              s01 = ne00;
              s02 = ne01*s01;
              s03 = ne02*s02;
-@@ -1560,10 +1613,10 @@ static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const
+@@ -1573,7 +1622,6 @@ static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const
      const void * alpha = traits::get_alpha();
      const void * beta = traits::get_beta();
  
 -    const int cc = ggml_cuda_info().devices[ctx.device].cc;
+     // Kepler port: upstream rules, plus f32 output on GPUs without fast fp16 arithmetic (sm_30).
+     // (The community patch had `cc == !fast_fp16_hardware_available(cc)`, always false, and narrowed BF16.)
      bool prefer_f32_output = false;
-     if (compute_type == GGML_TYPE_F16) {
--        prefer_f32_output = cc == GGML_CUDA_CC_VOLTA || GGML_CUDA_CC_IS_RDNA4(cc) || GGML_CUDA_CC_IS_CDNA(cc);
-+        prefer_f32_output = (GGML_CUDA_CC_IS_NVIDIA(cc) && !fast_fp16_hardware_available(cc)) ||
-+                            cc == GGML_CUDA_CC_VOLTA || GGML_CUDA_CC_IS_RDNA4(cc) || GGML_CUDA_CC_IS_CDNA(cc);
-     } else if (compute_type == GGML_TYPE_BF16) {
-         prefer_f32_output = !GGML_CUDA_CC_IS_RDNA3(cc) && !GGML_CUDA_CC_IS_CDNA(cc);
-     }
-@@ -1587,6 +1640,44 @@ static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const
+@@ -1602,6 +1650,44 @@ static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const
      GGML_ASSERT(ne12 % ne02 == 0);
      GGML_ASSERT(ne13 % ne03 == 0);
  
@@ -367,57 +153,11 @@ index b813408..da50362 100644
      // broadcast factors
      const int64_t r2 = ne12/ne02;
      const int64_t r3 = ne13/ne03;
-@@ -1600,7 +1691,39 @@ static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const
-     // Theoretically cublasGemmStridedBatchedEx would always work, even for a single matrix.
-     // However, for some old NVIDIA and AMD GPUs the strided/Ex GEMM is much slower,
-     //     probably because the internal kernel selection logic is suboptimal.
--    if (use_sm30_batched_gemm) {
-+    if (use_sm30_batched_gemm && ne12*ne13 <= INT_MAX) {
-+        const int64_t ne23 = ne12*ne13;
-+        if (r2 == 1 && r3 == 1 && is_src0_cont_2 && is_src1_cont_2) {
-+            // with a [0, 2, 1, 3] perm. and ne02==1 the matrix strides need to be determined from dim 3:
-+            const int64_t sma = ne02 == 1 ? s03 : s02;
-+            const int64_t smb = ne12 == 1 ? s13 : s12;
-+            CUBLAS_CHECK(cublasSgemmStridedBatched(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
-+                    ne01, ne11, ne10,
-+                    (const float *) alpha, (const float *) src0_ptr, s01, sma,
-+                                           (const float *) src1_ptr, s11, smb,
-+                    (const float *) beta,  (float *) dst_ptr, ldc, ne1*ldc,
-+                    (int) ne23));
-+        } else {
-+            ggml_cuda_pool_alloc<const void *> ptrs_src(ctx.pool(), 2*ne23);
-+            ggml_cuda_pool_alloc<void *> ptrs_dst(ctx.pool(), ne23);
-+            const dim3 block_dims(16, 16);
-+            const dim3 grid_dims((ne13 + 15) / 16, (ne12 + 15) / 16);
-+            k_compute_batched_ptrs<<<grid_dims, block_dims, 0, main_stream>>>(
-+                    src0_ptr, src1_ptr, dst_ptr,
-+                    ptrs_src.get(), ptrs_dst.get(),
-+                    ne12, ne13, ne23,
-+                    s02*sizeof(cuda_t), s03*sizeof(cuda_t),
-+                    s12*sizeof(cuda_t), s13*sizeof(cuda_t),
-+                    nbd2, nbd3, r2, r3);
-+            CUDA_CHECK(cudaGetLastError());
-+            CUBLAS_CHECK(cublasSgemmBatched(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
-+                    ne01, ne11, ne10,
-+                    (const float *) alpha, (const float **) ptrs_src.get(), s01,
-+                                           (const float **) (ptrs_src.get() + ne23), s11,
-+                    (const float *) beta,  (float **) ptrs_dst.get(), ldc,
-+                    (int) ne23));
-+        }
-+    } else if (use_sm30_batched_gemm) {
-         for (int64_t i13 = 0; i13 < ne13; ++i13) {
-             for (int64_t i12 = 0; i12 < ne12; ++i12) {
-                 const int64_t i03 = i13 / r3;
-@@ -1731,11 +1854,22 @@ static void ggml_cuda_mul_mat_cublas(ggml_backend_cuda_context & ctx, const ggml
-         }
+@@ -1771,11 +1857,17 @@ static void ggml_cuda_mul_mat_cublas(ggml_backend_cuda_context & ctx, const ggml
+         compute_type = GGML_TYPE_F32;
      }
  
 -    constexpr size_t max_src0_convert_size = 512ull * 1024 * 1024;
-+    // Kepler port: only the classic FP32 cuBLAS GEMMs run below cc 5.0 (see ggml_cuda_mul_mat_cublas_impl).
-+    if (GGML_CUDA_CC_IS_NVIDIA(cc) && cc < 500) {
-+        compute_type = GGML_TYPE_F32;
-+    }
-+
 +    // Kepler port: below cc 5.0 every batched quantised matmul dequantises the whole weight to fp32 in the
 +    // legacy pool (no VMM), e.g. a 151936x1024 vocabulary head needs 620 MB; on a 1-2 GB card that runs out
 +    // of memory. Chunk by rows with a small budget there, and chunk quantised 2D weights too (a 3D view
@@ -434,7 +174,7 @@ index b813408..da50362 100644
              src0_f32_size > max_src0_convert_size) {
          const size_t f32_row_size = src0_f32_size / src0->ne[1];
          const int64_t rows_per_chunk = std::max<int64_t>(1, (int64_t) (max_src0_convert_size / f32_row_size));
-@@ -1911,6 +2045,9 @@ static bool ggml_cuda_should_fuse_mul_mat_vec_q(const ggml_tensor * tensor) {
+@@ -1951,6 +2043,9 @@ static bool ggml_cuda_should_fuse_mul_mat_vec_q(const ggml_tensor * tensor) {
      if (cc <= GGML_CUDA_CC_PASCAL) {
          return false;
      }
@@ -444,7 +184,7 @@ index b813408..da50362 100644
      //we only support fusion for ncols_dst = 1
      if (tensor->op == GGML_OP_MUL_MAT && dst->ne[1] != 1) {
          return false;
-@@ -2037,6 +2174,10 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
+@@ -2077,6 +2172,10 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
          return;
      }
  
@@ -455,7 +195,7 @@ index b813408..da50362 100644
      // If src0 is a temporary compute buffer it may have some padding that needs to be cleared for mul_mat_vec_q or mul_mat_q.
      // But if src0 is also a view of another tensor then this cannot be done safely because it may overwrite valid tensor data.
      // Therefore, in such cases use cuBLAS.
-@@ -2075,6 +2216,10 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
+@@ -2115,6 +2214,10 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
          return;
      }
      if (ggml_cuda_should_use_mmvq(src0->type, cc, ne11)) {
@@ -466,48 +206,6 @@ index b813408..da50362 100644
          ggml_cuda_mul_mat_vec_q(ctx, src0, src1, nullptr, dst);
          return;
      }
-diff --git a/ggml/src/ggml-cuda/mmf.cuh b/ggml/src/ggml-cuda/mmf.cuh
-index 429c887..5b6db52 100644
---- a/ggml/src/ggml-cuda/mmf.cuh
-+++ b/ggml/src/ggml-cuda/mmf.cuh
-@@ -877,6 +877,14 @@ static void mul_mat_f_switch_rows_per_block(
-     }
- }
- 
-+// Kepler/CUDA<11 port: without cuda_bf16.h, vendors/cuda.h aliases nv_bfloat162 to half2, so the bf16
-+// instantiations would duplicate the half2 ones.
-+#if defined(GGML_USE_HIP) || defined(GGML_USE_MUSA) || CUDART_VERSION >= 11000
-+#define DECL_MMF_CASE_BF16(...) __VA_ARGS__
-+#else
-+#define DECL_MMF_CASE_BF16(...)
-+#endif
-+
- #define DECL_MMF_CASE_HELPER(T, nrows_dst, ncols_dst) \
-     template void mul_mat_f_cuda<T, nrows_dst, ncols_dst>( \
-         const T * x, const float * y, const int32_t * ids, float * dst, \
-@@ -891,18 +899,18 @@ static void mul_mat_f_switch_rows_per_block(
- #define DECL_MMF_CASE_EXTERN(ncols_dst) \
-     extern DECL_MMF_CASE_HELPER(float, MMF_ROWS_PER_BLOCK, ncols_dst) \
-     extern DECL_MMF_CASE_HELPER(half2, MMF_ROWS_PER_BLOCK, ncols_dst) \
--    extern DECL_MMF_CASE_HELPER(nv_bfloat162, MMF_ROWS_PER_BLOCK, ncols_dst) \
-+    DECL_MMF_CASE_BF16(extern DECL_MMF_CASE_HELPER(nv_bfloat162, MMF_ROWS_PER_BLOCK, ncols_dst)) \
-     extern DECL_MMF_CASE_HELPER(float, MMF_ROWS_PER_BLOCK_CDNA, ncols_dst) \
-     extern DECL_MMF_CASE_HELPER(half2, MMF_ROWS_PER_BLOCK_CDNA, ncols_dst) \
--    extern DECL_MMF_CASE_HELPER(nv_bfloat162, MMF_ROWS_PER_BLOCK_CDNA, ncols_dst)
-+    DECL_MMF_CASE_BF16(extern DECL_MMF_CASE_HELPER(nv_bfloat162, MMF_ROWS_PER_BLOCK_CDNA, ncols_dst))
- 
- #define DECL_MMF_CASE(ncols_dst) \
-     DECL_MMF_CASE_HELPER(float, MMF_ROWS_PER_BLOCK, ncols_dst) \
-     DECL_MMF_CASE_HELPER(half2, MMF_ROWS_PER_BLOCK, ncols_dst) \
--    DECL_MMF_CASE_HELPER(nv_bfloat162, MMF_ROWS_PER_BLOCK, ncols_dst) \
-+    DECL_MMF_CASE_BF16(DECL_MMF_CASE_HELPER(nv_bfloat162, MMF_ROWS_PER_BLOCK, ncols_dst)) \
-     DECL_MMF_CASE_HELPER(float, MMF_ROWS_PER_BLOCK_CDNA, ncols_dst) \
-     DECL_MMF_CASE_HELPER(half2, MMF_ROWS_PER_BLOCK_CDNA, ncols_dst) \
--    DECL_MMF_CASE_HELPER(nv_bfloat162, MMF_ROWS_PER_BLOCK_CDNA, ncols_dst)
-+    DECL_MMF_CASE_BF16(DECL_MMF_CASE_HELPER(nv_bfloat162, MMF_ROWS_PER_BLOCK_CDNA, ncols_dst))
- 
- DECL_MMF_CASE_EXTERN(1);
- DECL_MMF_CASE_EXTERN(2);
 diff --git a/ggml/src/ggml-cuda/mmvk.cu b/ggml/src/ggml-cuda/mmvk.cu
 new file mode 100644
 index 0000000..c1f9e5d
@@ -4522,55 +4220,6 @@ index 0000000..3645d46
 +
 +bool ggml_cuda_mul_mat_vec_kepler_attn(
 +    ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst);
-diff --git a/ggml/src/ggml-cuda/rope.cu b/ggml/src/ggml-cuda/rope.cu
-index 45e8134..a187994 100644
---- a/ggml/src/ggml-cuda/rope.cu
-+++ b/ggml/src/ggml-cuda/rope.cu
-@@ -293,9 +293,13 @@ static __global__ void rope_multi(const T *            x,
-     rope_yarn<forward>(theta_base/freq_factor, freq_scale, corr_dims, iw, ext_factor, attn_factor, cos_theta, sin_theta);
- 
-     // idst/ix point at channel i0/2; the first channel of the rotated pair is n_offs + iw/2 = i0/2 + n_offs/2
-+    #if CUDART_VERSION > 8000 || !defined(CUDART_VERSION)
-     const float x0 = x[ix + n_offs/2 + 0];
-     const float x1 = x[ix + n_offs/2 + n_dims/2];
--
-+#else
-+    const float x0 = __half2float(x[ix + n_offs/2 + 0]);
-+    const float x1 = __half2float(x[ix + n_offs/2 + n_dims/2]);
-+#endif
-     dst[idst + n_offs/2 + 0]        = ggml_cuda_cast<D>(x0*cos_theta - x1*sin_theta);
-     dst[idst + n_offs/2 + n_dims/2] = ggml_cuda_cast<D>(x0*sin_theta + x1*cos_theta);
- }
-diff --git a/ggml/src/ggml-cuda/unary.cu b/ggml/src/ggml-cuda/unary.cu
-index b3b6aa4..b5c688d 100644
---- a/ggml/src/ggml-cuda/unary.cu
-+++ b/ggml/src/ggml-cuda/unary.cu
-@@ -107,11 +107,25 @@ static __device__ __forceinline__ float op_ceil(float x) {
- }
- 
- static __device__ __forceinline__ float op_round(float x) {
-+    #ifdef __NVCC__
-     return roundf(x);
-+    #else
-+    if (isnan(x) || isinf(x)) {
-+        return x;
-+    }
-+    return copysignf(floorf(fabsf(x) + 0.5f), x);
-+    #endif
- }
- 
- static __device__ __forceinline__ float op_trunc(float x) {
-+    #ifdef __NVCC__
-     return trunc(x);
-+    #else
-+    if (isnan(x) || isinf(x)) {
-+        return x;
-+    }
-+    return (x < 0.0f) ? ceilf(x) : floorf(x);
-+    #endif
- }
- 
- template <float (*op)(float), typename T>
 -- 
 2.56.1.windows.1
 

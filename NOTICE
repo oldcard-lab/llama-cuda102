@@ -1,3 +1,7 @@
+Patch 0001 is 6uO's work, Copyright (c) 2026 6uO, released under the MIT license.
+Original discussion: https://github.com/ggml-org/llama.cpp/discussions/29961
+MIT license grant: https://github.com/ggml-org/llama.cpp/discussions/29961#discussioncomment-19833442
+
 This project patches llama.cpp (https://github.com/ggml-org/llama.cpp), release v0.8.0.
 The patches modify files of llama.cpp and ggml, which are distributed under the following license:
 

@@ -1,9 +1,8 @@
-From bc4d234a98ad72201490ce971249de6f2bd3ebe4 Mon Sep 17 00:00:00 2001
-From: kepler-llama <kepler-llama@localhost>
-Date: Sun, 22 Nov 2026 22:31:37 -0600
+From 68bec0cdf69b9c9205cbc05216a8e793d45abc1e Mon Sep 17 00:00:00 2001
+From: oldcard-lab <oldcard-lab@localhost>
+Date: Tue, 24 Nov 2026 12:10:17 -0600
 Subject: [PATCH 5/5] common: FunctionGemma tool-call parser
 
-FunctionGemma-270M returns proper tool_calls through llama-server --jinja (upstream has no parser for it).
 ---
  common/chat.cpp                  |   6 ++
  common/parsers/functiongemma.cpp | 148 +++++++++++++++++++++++++++++++

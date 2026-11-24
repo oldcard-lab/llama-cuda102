@@ -5,8 +5,8 @@ coding agents under human direction. In detail:
 
 - **Kernels** (`mmvk.cu`, the prompt path, im2col): written and iterated by AI coding agents (Google's Gemini via
   AGY, OpenAI Codex), each round driven by a written design brief and measured on the real card.
-- **Compatibility layer** (patches 0001-0002): written by OpenAI Codex agents under clean-room rules
-  (see PROVENANCE.md).
+- **Compatibility layer** (patch 0001): 6uO's MIT-licensed port (discussion #29961), forward-ported by OpenAI
+  Codex agents and debugged by the Anthropic Claude agent; the Claude agent also made the fixes in patch 0002.
 - **Coordination, test design and release engineering:** an Anthropic Claude agent. That covered the test
   pipeline, the strict checker, the release gate, benchmarks and these documents.
 - **Reviews:** independent reviews by other models (Gemini, GPT, Claude, Muse) at design points; their findings and
