@@ -14,9 +14,9 @@ v0.8.0 (2026-11-22). `-ngl 99 -fa off -t 1`.
 - `tools/mmvk-check` (per-row fp64 reference, NaN-poisoned output, bitwise repeat, weights-buffer mode): 597 cases,
   0 FAIL, worst relative error 1.6e-7 (limit 2e-5), both modes.
 - Every model below: perplexity equal to the expected value, greedy text sane, no GPU faults (Xid) during the gate.
-- FP8 (`F8_E4M3`) weights, outside the gate (2026-11-25): LFM2.5-350M with every weight set to `f8_e4m3` gives the
+- FP8 (`F8_E4M3`) weights, outside the gate (2026-11-25): LFM2.5-350M with every weight matrix set to `f8_e4m3` (requantized from Q8_0; norms stay F32) gives the
   same perplexity on the card as on the CPU (141.16 vs 141.19 batched at `-ub 128`, which goes through the
-  row-chunked cuBLAS conversion; 43.74 vs 43.75 at `-ub 1`), with no GPU faults. It is slow here: 17 t/s generation
+  row-chunked cuBLAS conversion; 43.74 vs 43.75 at `-ub 1`, the FP8 matrix-vector kernel), with no GPU faults. It is slow here: 17 t/s generation
   against 88 for Q4_K_M, because Kepler has no FP8 hardware and no tuned kernel for it. Use Q4_K/Q8_0 instead.
 
 ## Token generation (tg128, tokens/s)
