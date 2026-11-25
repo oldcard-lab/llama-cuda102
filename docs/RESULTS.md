@@ -2,7 +2,7 @@
 
 Hardware: GeForce GTX 650 Ti (GK106, compute capability 3.0, 4 SMX, 1 GB GDDR5, ~86 GB/s), Intel i7-4770,
 NVIDIA 470.256.02, CUDA 10.2 toolkit, clang 22. Build: this patch series on llama.cpp v1.0.0. Correctness and token
-generation are from the v1r2 release gate (2026-11-25), whose source this series reproduces exactly; so are the
+generation are from the v1r3 release gate (2026-11-25), whose source this series reproduces exactly; so are the
 "This build" prompt numbers at the gate's micro-batch sizes (32, 64 and 128 below; the gate does not run -ub 64 on
 Qwen3-1.7B). On every gated model the v1.0.0 build gives the same perplexity as the v0.8.0
 build (r29) and the same speed within 1%. The other sections were measured on earlier builds of the same kernels on
@@ -19,32 +19,32 @@ v0.8.0 (2026-11-22). `-ngl 99 -fa off -t 1`.
 
 | Model | Quant | t/s |
 |---|---|---:|
-| LFM2.5-350M | Q4_K_M | 88.8 |
+| LFM2.5-350M | Q4_K_M | 88.9 |
 | gemma-3-270m-it | Q4_K_M | 64.6 |
 | FunctionGemma-270M | Q8_0 | 65.0 |
-| LFM2.5-350M | Q8_0 | 59.7 |
+| LFM2.5-350M | Q8_0 | 59.6 |
 | granite-4.0-350m | Q8_0 | 47.9 |
-| Qwen3-0.6B | Q4_K_M | 45.7 |
+| Qwen3-0.6B | Q4_K_M | 45.8 |
 | SmolLM2-360M-Instruct | Q8_0 | 44.8 |
 | Qwen2.5-0.5B-Instruct | Q8_0 | 38.8 |
 | Qwen2.5-Coder-0.5B-Instruct | Q8_0 | 38.8 |
 | Qwen3.5-0.8B | Q4_K_M | 35.6 |
 | TinyLlama-1.1B-Chat | Q4_K_M | 34.8 |
-| Qwen3-0.6B | Q8_0 | 32.7 |
-| LFM2.5-1.2B-Instruct | Q4_K_M | 32.5 |
+| Qwen3-0.6B | Q8_0 | 32.6 |
+| LFM2.5-1.2B-Instruct | Q4_K_M | 32.6 |
 | LFM2-1.2B-Tool | Q4_K_M | 32.6 |
-| Qwen3-0.6B | Q5_K_M | 29.9 |
+| Qwen3-0.6B | Q5_K_M | 30.0 |
 | Llama-3.2-1B-Instruct | Q4_K_M | 29.0 |
 | OLMo-2-0425-1B-Instruct | Q4_K_S | 28.1 |
 | Qwen2.5-Coder-1.5B-Instruct | Q3_K_S (imatrix) | 23.8 |
-| Qwen2.5-1.5B-Instruct | Q3_K_S (imatrix) | 23.7 |
+| Qwen2.5-1.5B-Instruct | Q3_K_S (imatrix) | 23.8 |
 | SmolLM2-1.7B-Instruct | Q3_K_S (imatrix) | 23.5 |
 | Qwen3-1.7B | Q3_K_S (imatrix) | 23.2 |
 | granite-4.0-h-1b | Q3_K_S (imatrix) | 22.8 |
 | LFM3-1.7B | Q3_K_M (imatrix) | 22.2 |
 | granite-4.0-1b | Q3_K_S (imatrix) | 22.2 |
-| NuExtract-2.0-2B | Q3_K_M | 22.1 |
-| gemma-3-1b-it | Q4_K_M | 20.2 |
+| NuExtract-2.0-2B | Q3_K_M | 22.2 |
+| gemma-3-1b-it | Q4_K_M | 20.1 |
 | LFM3-1.7B | IQ3_XXS | 13.4 |
 
 ### Kepler kernels vs the stock CUDA kernels (same build, `GGML_CUDA_KEPLER_MMV=0` for stock; tg64, t/s)
@@ -65,7 +65,7 @@ v0.8.0 (2026-11-22). `-ngl 99 -fa off -t 1`.
 | Qwen2.5-Coder-1.5B Q3_K_S | 32 | 26.2 | 32.4 |
 | LFM2.5-1.2B Q4_K_M | 64 | 41.6 | 95.4 |
 | Qwen3-0.6B Q8_0 | 128 | 321.6 | 321.8 |
-| LFM2.5-350M Q4_K_M | 128 | 615.8 | 616.1 |
+| LFM2.5-350M Q4_K_M | 128 | 615.8 | 616.2 |
 
 ## Agent-style calls (prompt of N tokens + 128 generated, modelled from measured pp and tg at depth)
 
@@ -85,7 +85,7 @@ v0.8.0 (2026-11-22). `-ngl 99 -fa off -t 1`.
 | base.en q8_0 | 1.2-1.4 s |
 | small.en q8_0 | 2.6-3.0 s |
 
-The v1r2 gate measured base.en 1.24 s and small.en 2.58 s. (CPU build on the same machine: small.en 5.4 s. Whisper runs single-threaded here, so its wall time moves with
+The v1r3 gate measured base.en 1.32 s and small.en 3.05 s. (CPU build on the same machine: small.en 5.4 s. Whisper runs single-threaded here, so its wall time moves with
 other CPU load.)
 
 ## Vision (YOLO-class detection, 416x416, one stream, inference only)

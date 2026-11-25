@@ -22,12 +22,14 @@ conflicting hunks in 6 files, all where upstream had changed the same lines (mos
 0003 had one conflict each in `ggml-cuda.cu`; 0004 and 0005 applied unchanged. A Codex agent resolved the 0001
 conflicts, a Claude agent resolved the others and fixed what the first build and two independent reviews (Muse Code,
 Gemini 4 Neon through AGY) found: an FP8 branch in `mmvf.cu` placed behind a CUDA 11 guard, and FP8 weights missing
-from the low-memory conversion chunking for older cards. These forward-port resolutions are this project's, not
+from the low-memory conversion chunking for older cards. A test after the gate found FunctionGemma tool calls
+returning empty arguments: v1.0.0's shared Gemma 4 parser now finds argument nodes by tag instead of rule name, so
+patch 0005 tags them the same way (the release gate now checks tool-call arguments). These forward-port resolutions are this project's, not
 6uO's; the Git author of 0001 stays 6uO because the port itself is 6uO's.
 
-Applied with `git am --keep-cr` to upstream's v1.0.0 tag, the series produces exactly the source of the v1r2
+Applied with `git am --keep-cr` to upstream's v1.0.0 tag, the series produces exactly the source of the v1r3
 release on which the gated results in RESULTS.md were measured (the v1.0.0 snapshot used for development has the
-same tree as the tag). The v1r2 gate also matched the earlier v0.8.0 release (r29): same perplexity on all 29
+same tree as the tag). The v1r3 gate also matched the earlier v0.8.0 release (r29): same perplexity on all 29
 gated models, speed within 1%. A build from this repository on the test card passed the same checks: llama.cpp's
 GPU op tests, the strict kernel checker, and matching speed.
 
