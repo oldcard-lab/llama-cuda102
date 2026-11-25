@@ -1,14 +1,14 @@
-From ef1080df28ddfb206e43f270e6306e7e97340052 Mon Sep 17 00:00:00 2001
+From a5e2cae3a4882facfbb05c05c64333e945ebe771 Mon Sep 17 00:00:00 2001
 From: oldcard-lab <oldcard-lab@localhost>
 Date: Tue, 24 Nov 2026 20:06:28 -0600
 Subject: [PATCH 5/5] common: FunctionGemma tool-call parser
 
 ---
  common/chat.cpp                  |   6 ++
- common/parsers/functiongemma.cpp | 148 +++++++++++++++++++++++++++++++
+ common/parsers/functiongemma.cpp | 151 +++++++++++++++++++++++++++++++
  common/parsers/parsers.h         |   2 +
  common/parsers/sources.cmake     |   1 +
- 4 files changed, 157 insertions(+)
+ 4 files changed, 160 insertions(+)
  create mode 100644 common/parsers/functiongemma.cpp
 
 diff --git a/common/chat.cpp b/common/chat.cpp
@@ -30,14 +30,16 @@ index da29cd6..3bdaeb5 100644
          LOG_DBG("Using specialized template: Gemma4\n");
 diff --git a/common/parsers/functiongemma.cpp b/common/parsers/functiongemma.cpp
 new file mode 100644
-index 0000000..0e43636
+index 0000000..812cc35
 --- /dev/null
 +++ b/common/parsers/functiongemma.cpp
-@@ -0,0 +1,148 @@
+@@ -0,0 +1,151 @@
 +#include "parsers.h"
 +
 +// FunctionGemma tool calls; see the r19 notes in the kepler REFERENCES for the format and why this reuses
-+// the gemma4 rule names and mapper.
++// the gemma4 rule names, AST tags and mapper.
++
++using gemma4 = common_chat_peg_gemma4_mapper;
 +
 +namespace workaround {
 +
@@ -91,7 +93,7 @@ index 0000000..0e43636
 +        { COMMON_CHAT_ROLE_ASSISTANT, "<start_of_turn>model" },
 +    };
 +
-+    // same argument syntax and AST rule names as gemma4: reuse its mapper
++    // same argument syntax and AST tags as gemma4: reuse its mapper
 +    data.format = COMMON_CHAT_FORMAT_PEG_GEMMA4;
 +
 +    data.preserved_tokens = {
@@ -110,31 +112,32 @@ index 0000000..0e43636
 +        auto start = p.rule("start", p.optional(p.literal("<start_of_turn>model\n")));
 +
 +        if (include_grammar) {
-+            // rule names must match gemma4_to_json() in chat-peg-parser.cpp
-+            p.rule("gemma4-string-content", p.until("<escape>"));
-+            p.rule("gemma4-string", p.literal("<escape>") + p.ref("gemma4-string-content") + p.literal("<escape>"));
-+            p.rule("gemma4-bool", p.json_bool());
-+            p.rule("gemma4-null", p.json_null());
-+            p.rule("gemma4-number", p.json_number());
-+            p.rule("gemma4-dict-key", p.rule("gemma4-dict-key-name", p.chars("[^:}]", 1, -1)) + p.literal(":"));
-+            p.rule("gemma4-dict-kv", p.ref("gemma4-dict-key") + p.space() + p.ref("gemma4-value"));
++            // gemma4_to_json() in chat-peg-parser.cpp matches nodes by these TAGS (since llama.cpp v1.0.0; it used the
++            // rule names before), so every value node carries the same tag as in parsers/gemma4.cpp
++            p.rule("gemma4-string-content", p.tag(gemma4::STRING_CONTENT, p.until("<escape>")));
++            p.rule("gemma4-string", p.tag(gemma4::STRING, p.literal("<escape>") + p.ref("gemma4-string-content") + p.literal("<escape>")));
++            p.rule("gemma4-bool", p.tag(gemma4::BOOL, p.json_bool()));
++            p.rule("gemma4-null", p.tag(gemma4::NULL_, p.json_null()));
++            p.rule("gemma4-number", p.tag(gemma4::NUMBER, p.json_number()));
++            p.rule("gemma4-dict-key", p.tag(gemma4::DICT_KEY, p.tag(gemma4::DICT_KEY_NAME, p.chars("[^:}]", 1, -1)) + p.literal(":")));
++            p.rule("gemma4-dict-kv", p.tag(gemma4::DICT_KV, p.ref("gemma4-dict-key") + p.space() + p.ref("gemma4-value")));
 +            p.rule("gemma4-dict", [&]() {
 +                auto ws      = p.space();
 +                auto member  = p.ref("gemma4-dict-kv");
 +                auto members = p.sequence({member, p.zero_or_more(p.sequence({p.literal(","), ws, member}))});
-+                return p.sequence({
++                return p.tag(gemma4::DICT, p.sequence({
 +                    p.literal("{"), ws,
 +                    p.choice({p.literal("}"), p.sequence({members, ws, p.literal("}")})})
-+                });
++                }));
 +            });
 +            p.rule("gemma4-array", [&]() {
 +                auto ws       = p.space();
 +                auto value    = p.ref("gemma4-value");
 +                auto elements = p.sequence({value, p.zero_or_more(p.sequence({p.literal(","), ws, value}))});
-+                return p.sequence({
++                return p.tag(gemma4::ARRAY, p.sequence({
 +                    p.literal("["), ws,
 +                    p.choice({p.literal("]"), p.sequence({elements, ws, p.literal("]")})})
-+                });
++                }));
 +            });
 +            p.rule("gemma4-value", [&]() {
 +                return p.choice({

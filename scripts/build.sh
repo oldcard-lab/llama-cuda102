@@ -29,14 +29,26 @@ SRC=$WORK/llama.cpp
 if [ ! -d "$SRC/.git" ]; then
   git clone --branch "$BASE_TAG" --depth 1 "$UPSTREAM" "$SRC"
 fi
-[ "$(git -C "$SRC" rev-list -n 1 "$BASE_TAG")" = "$BASE_COMMIT" ] || { echo "$BASE_TAG is not $BASE_COMMIT"; exit 3; }
+if ! git -C "$SRC" merge-base --is-ancestor "$BASE_COMMIT" HEAD 2>/dev/null; then
+  echo "$SRC is not llama.cpp $BASE_TAG ($BASE_COMMIT); it may be from an older version of this repository."
+  echo "Delete $SRC and run again."
+  exit 3
+fi
 subjects=$(git -C "$SRC" log --format=%s)
+# fingerprint of patches/, written when they are applied: a rerun with the same files skips git am, a work folder
+# that carries another version of the series (same commit subjects, different code) is refused
+PSUM=$(cat "$HERE"/patches/*.patch | sha256sum | cut -d' ' -f1)
+MARK="$SRC/.git/llama-cuda102-series"
 if echo "$subjects" | grep -q '6uO, llama.cpp discussion #29961' &&
    echo "$subjects" | grep -q 'FunctionGemma tool-call parser'; then
-  :  # this series is already applied
+  if [ "$(cat "$MARK" 2>/dev/null)" != "$PSUM" ]; then
+    echo "$SRC carries a different version of this patch series. Delete $SRC and run again."
+    exit 4
+  fi
 elif [ "$(git -C "$SRC" rev-parse HEAD)" = "$BASE_COMMIT" ]; then
   # --keep-cr: one file in patch 0003 has CRLF line endings, which plain `git am` would strip
   git -C "$SRC" -c user.name=oldcard-lab -c user.email=oldcard-lab@localhost am --keep-cr "$HERE"/patches/*.patch
+  echo "$PSUM" > "$MARK"
 else
   echo "$SRC has other commits on top of $BASE_TAG (an older or partly applied series). Delete it and run again."
   exit 4
