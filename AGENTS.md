@@ -12,4 +12,6 @@ nothing here may contain private details (host names, user paths, tracker URLs, 
 Rules: the series must stay byte-identical in result to a gated release (see docs/PROVENANCE.md). Run the
 private-detail scan before every commit (`scripts/scan-private.sh`, kept in the private development copy only: its
 pattern list names private hosts).
-Agents do not push this repository to any public host; the owner does.
+Agents publish this repository to GitHub only through the gated push tool (`github_push.py` in the private workspace
+tooling: reviewed and merged commits only, fast-forward to `main`, private paths removed, content scan, audit log),
+never with a plain `git push`. A first publish to a new public repository is the owner's.
