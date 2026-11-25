@@ -1,4 +1,4 @@
-From b5ea0587871a94eb1b885fc955ddd6e2de33290e Mon Sep 17 00:00:00 2001
+From c5e01156570fbc166ff54d6b7e691dc6e58f494f Mon Sep 17 00:00:00 2001
 From: oldcard-lab <oldcard-lab@localhost>
 Date: Tue, 24 Nov 2026 12:10:17 -0600
 Subject: [PATCH 3/5] cuda: Kepler (sm_30) matrix-vector and attention kernels,
@@ -11,26 +11,26 @@ Subject: [PATCH 3/5] cuda: Kepler (sm_30) matrix-vector and attention kernels,
 - Switches: GGML_CUDA_KEPLER_MMV (matrix-vector kernels), GGML_CUDA_KEPLER_PP (prompt path),
   GGML_CUDA_KEPLER_TRACE=1 (print which kernel ran).
 ---
- ggml/src/ggml-cuda/ggml-cuda.cu |  115 +-
+ ggml/src/ggml-cuda/ggml-cuda.cu |  116 +-
  ggml/src/ggml-cuda/mmvk.cu      | 3991 +++++++++++++++++++++++++++++++
  ggml/src/ggml-cuda/mmvk.cuh     |   11 +
- 3 files changed, 4111 insertions(+), 6 deletions(-)
+ 3 files changed, 4112 insertions(+), 6 deletions(-)
  create mode 100644 ggml/src/ggml-cuda/mmvk.cu
  create mode 100644 ggml/src/ggml-cuda/mmvk.cuh
 
 diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
-index c79dde6..11dd259 100644
+index f65f81e..e6e04cb 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda.cu
 +++ b/ggml/src/ggml-cuda/ggml-cuda.cu
-@@ -32,6 +32,7 @@
- #include "ggml-cuda/mmf.cuh"
+@@ -35,6 +35,7 @@
  #include "ggml-cuda/mmq.cuh"
+ #include "ggml-cuda/mmq-few.cuh"
  #include "ggml-cuda/mmvf.cuh"
 +#include "ggml-cuda/mmvk.cuh"
  #include "ggml-cuda/mmvq.cuh"
  #include "ggml-cuda/moe-weighted-reduction.cuh"
  #include "ggml-cuda/norm.cuh"
-@@ -1487,6 +1488,29 @@ static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const
+@@ -1855,6 +1856,29 @@ static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const
      const int64_t ne_dst = ggml_nelements(dst);
      cudaStream_t main_stream = ctx.stream();
      cublasHandle_t cublas_h = ctx.cublas_handle();
@@ -60,7 +60,7 @@ index c79dde6..11dd259 100644
  
      const size_t src0_ts = ggml_type_size(src0->type);
      GGML_ASSERT(nb00 == src0_ts);
-@@ -1513,6 +1537,11 @@ static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const
+@@ -1881,6 +1905,11 @@ static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const
  
      if (src0->type == compute_type) {
          src0_ptr = (const cuda_t *) src0->data;
@@ -72,7 +72,7 @@ index c79dde6..11dd259 100644
      } else {
          src0_alloc.alloc(ggml_nelements(src0));
  
-@@ -1526,8 +1555,28 @@ static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const
+@@ -1894,8 +1923,28 @@ static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const
              s03 *= src0_bs;
          } else {
              const auto convert_func = traits::convert_nc(src0->type);
@@ -103,7 +103,7 @@ index c79dde6..11dd259 100644
              s01 = ne00;
              s02 = ne01*s01;
              s03 = ne02*s02;
-@@ -1573,7 +1622,6 @@ static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const
+@@ -1941,7 +1990,6 @@ static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const
      const void * alpha = traits::get_alpha();
      const void * beta = traits::get_beta();
  
@@ -111,7 +111,7 @@ index c79dde6..11dd259 100644
      // Kepler port: upstream rules, plus f32 output on GPUs without fast fp16 arithmetic (sm_30).
      // (The community patch had `cc == !fast_fp16_hardware_available(cc)`, always false, and narrowed BF16.)
      bool prefer_f32_output = false;
-@@ -1602,6 +1650,44 @@ static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const
+@@ -1970,6 +2018,44 @@ static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const
      GGML_ASSERT(ne12 % ne02 == 0);
      GGML_ASSERT(ne13 % ne03 == 0);
  
@@ -156,7 +156,7 @@ index c79dde6..11dd259 100644
      // broadcast factors
      const int64_t r2 = ne12/ne02;
      const int64_t r3 = ne13/ne03;
-@@ -1771,11 +1857,17 @@ static void ggml_cuda_mul_mat_cublas(ggml_backend_cuda_context & ctx, const ggml
+@@ -2139,11 +2225,18 @@ static void ggml_cuda_mul_mat_cublas(ggml_backend_cuda_context & ctx, const ggml
          compute_type = GGML_TYPE_F32;
      }
  
@@ -169,6 +169,7 @@ index c79dde6..11dd259 100644
 +        16ull * 1024 * 1024 : 512ull * 1024 * 1024;
      const size_t src0_f32_size = ggml_nelements(src0) * sizeof(float);
 +    const bool src0_chunkable = src0->type == GGML_TYPE_F16 || src0->type == GGML_TYPE_BF16 ||
++        src0->type == GGML_TYPE_F8_E4M3 ||
 +        (ggml_is_quantized(src0->type) && src0->ne[2] == 1 && src0->ne[3] == 1);
  
 -    if (compute_type == GGML_TYPE_F32 &&
@@ -177,7 +178,7 @@ index c79dde6..11dd259 100644
              src0_f32_size > max_src0_convert_size) {
          const size_t f32_row_size = src0_f32_size / src0->ne[1];
          const int64_t rows_per_chunk = std::max<int64_t>(1, (int64_t) (max_src0_convert_size / f32_row_size));
-@@ -1951,6 +2043,9 @@ static bool ggml_cuda_should_fuse_mul_mat_vec_q(const ggml_tensor * tensor) {
+@@ -2324,6 +2417,9 @@ static bool ggml_cuda_should_fuse_mul_mat_vec_q(const ggml_tensor * tensor) {
      if (cc <= GGML_CUDA_CC_PASCAL) {
          return false;
      }
@@ -187,7 +188,7 @@ index c79dde6..11dd259 100644
      //we only support fusion for ncols_dst = 1
      if (tensor->op == GGML_OP_MUL_MAT && dst->ne[1] != 1) {
          return false;
-@@ -2077,6 +2172,10 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
+@@ -2508,6 +2604,10 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
          return;
      }
  
@@ -198,10 +199,10 @@ index c79dde6..11dd259 100644
      // If src0 is a temporary compute buffer it may have some padding that needs to be cleared for mul_mat_vec_q or mul_mat_q.
      // But if src0 is also a view of another tensor then this cannot be done safely because it may overwrite valid tensor data.
      // Therefore, in such cases use cuBLAS.
-@@ -2115,6 +2214,10 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
-         return;
-     }
-     if (ggml_cuda_should_use_mmvq(src0->type, cc, ne11)) {
+@@ -2548,6 +2648,10 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
+     // from a per-type number of src1 columns up to 24, few-row MMQ is faster than MMVQ and MMQ
+     const bool use_mmq_few = ggml_cuda_should_use_mmq_few(src0, src1, cc);
+     if (!use_mmq_few && ggml_cuda_should_use_mmvq(src0->type, cc, ne11)) {
 +        if (ggml_cuda_should_use_mmvk(src0, src1, dst, cc) &&
 +                ggml_cuda_mul_mat_vec_kepler(ctx, src0, src1, dst)) {
 +            return;
@@ -4223,6 +4224,3 @@ index 0000000..3645d46
 +
 +bool ggml_cuda_mul_mat_vec_kepler_attn(
 +    ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst);
--- 
-2.56.1.windows.1
-

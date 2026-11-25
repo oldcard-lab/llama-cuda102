@@ -1,5 +1,5 @@
 #!/bin/bash
-# Fetch llama.cpp v0.8.0, apply the patch series, and build the CUDA backend for Kepler (sm_30) with CUDA 10.2,
+# Fetch llama.cpp v1.0.0, apply the patch series, and build the CUDA backend for Kepler (sm_30) with CUDA 10.2,
 # using clang as the CUDA compiler (CUDA 10.2's nvcc only accepts old host compilers).
 #
 # Usage: scripts/build.sh [WORK_DIR] [CUDA_DIR]
@@ -16,8 +16,8 @@ V=${CLANG_VERSION:-22}
 JOBS=${JOBS:-$(nproc)}
 TARGETS=${TARGETS:-llama-cli llama-server llama-completion llama-bench test-backend-ops}
 UPSTREAM=https://github.com/ggml-org/llama.cpp.git
-BASE_TAG=v0.8.0
-BASE_COMMIT=8642541b255bfb5dc39cd351a178be09013a55d6
+BASE_TAG=v1.0.0
+BASE_COMMIT=b1b770d90d94cad9e9ea5b993bdbc383a522fb28
 
 for t in clang-$V clang++-$V ld.lld-$V cmake ninja git; do
   command -v "$t" > /dev/null || { echo "missing tool: $t"; exit 2; }

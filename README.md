@@ -56,12 +56,12 @@ card. The 470 driver supports CUDA up to 11.4, so the CUDA 10.2 toolkit runs on 
 
 ```bash
 scripts/install-cuda-10.2.sh ~/cuda-10.2        # once: downloads 2.6 GB from NVIDIA, verifies the md5
-scripts/build.sh work ~/cuda-10.2                # clones llama.cpp v0.8.0, applies patches/, builds
+scripts/build.sh work ~/cuda-10.2                # clones llama.cpp v1.0.0, applies patches/, builds
 scripts/test.sh  work ~/cuda-10.2                # correctness checks on the GPU (MODEL=x.gguf adds a model run)
 ```
 
 The binaries are in `work/llama.cpp/build/bin` (`llama-cli`, `llama-server`, `llama-completion`, `llama-bench`).
-The series applies to llama.cpp **v0.8.0** (commit `8642541b255bfb5dc39cd351a178be09013a55d6`) with `git am --keep-cr`
+The series applies to llama.cpp **v1.0.0** (commit `b1b770d90d94cad9e9ea5b993bdbc383a522fb28`) with `git am --keep-cr`
 (one file in patch 0003 has CRLF line endings; `scripts/build.sh` does this for you).
 
 ## Using it
@@ -107,7 +107,7 @@ Reports from other cards are welcome as issues. For sm_35 / sm_37 today, see
 
 - **6uO**: the old-GPU CUDA port this series is built on (patch 0001), from llama.cpp discussion
   [#29961](https://github.com/ggml-org/llama.cpp/discussions/29961), released under the MIT license.
-  Forward-ported to v0.8.0 here.
+  Forward-ported to v0.8.0 and then to v1.0.0 here.
 - **This project (oldcard-lab)**: the fixes to the port (0002), the Kepler kernels and prompt path (0003), the
   im2col path (0004), the FunctionGemma parser (0005), the scripts and the strict kernel checker.
 - **The ggml authors**: llama.cpp and ggml themselves (MIT).
@@ -127,7 +127,7 @@ and approved each direction. Details, and the safeguards that do not depend on t
 
 ## Security
 
-Pinned to llama.cpp v0.8.0 and end-of-life CUDA 10.2 / driver 470: read [SECURITY.md](SECURITY.md) first.
+Pinned to llama.cpp v1.0.0 and end-of-life CUDA 10.2 / driver 470: read [SECURITY.md](SECURITY.md) first.
 
 ## License
 

@@ -1,6 +1,6 @@
-From 49c94287558dfb7fc8c6003811ed6bca31dbc975 Mon Sep 17 00:00:00 2001
+From ef1080df28ddfb206e43f270e6306e7e97340052 Mon Sep 17 00:00:00 2001
 From: oldcard-lab <oldcard-lab@localhost>
-Date: Tue, 24 Nov 2026 12:10:17 -0600
+Date: Tue, 24 Nov 2026 20:06:28 -0600
 Subject: [PATCH 5/5] common: FunctionGemma tool-call parser
 
 ---
@@ -12,10 +12,10 @@ Subject: [PATCH 5/5] common: FunctionGemma tool-call parser
  create mode 100644 common/parsers/functiongemma.cpp
 
 diff --git a/common/chat.cpp b/common/chat.cpp
-index 5f956e6..a6817be 100644
+index da29cd6..3bdaeb5 100644
 --- a/common/chat.cpp
 +++ b/common/chat.cpp
-@@ -1383,6 +1383,12 @@ static common_chat_params_init_fn common_chat_template_detect_params_init(const
+@@ -1408,6 +1408,12 @@ static common_chat_params_init_fn common_chat_template_detect_params_init(const
          return common_chat_params_init_deepseek_v3_2;
      }
  
@@ -183,10 +183,10 @@ index 0000000..0e43636
 +    return data;
 +}
 diff --git a/common/parsers/parsers.h b/common/parsers/parsers.h
-index 532a44f..52a6699 100644
+index b1b6d16..b2b1d60 100644
 --- a/common/parsers/parsers.h
 +++ b/common/parsers/parsers.h
-@@ -53,6 +53,8 @@ common_chat_params common_chat_params_init_deepseek_v3_2(const common_chat_templ
+@@ -47,6 +47,8 @@ common_chat_params common_chat_params_init_deepseek_v3_2(const common_chat_templ
  
  common_chat_params common_chat_params_init_functionary_v3_2(const common_chat_template & tmpl, const autoparser::generation_params & inputs);
  
@@ -207,6 +207,3 @@ index 2174f45..17a25ab 100644
      ${CMAKE_CURRENT_LIST_DIR}/functionary-v3-2.cpp
      ${CMAKE_CURRENT_LIST_DIR}/gemma4.cpp
      ${CMAKE_CURRENT_LIST_DIR}/gigachat-v3.cpp
--- 
-2.56.1.windows.1
-

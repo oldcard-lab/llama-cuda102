@@ -3,8 +3,8 @@
 Public-facing repository for the Kepler (sm_30) llama.cpp patch series. It is prepared for publishing by the owner:
 nothing here may contain private details (host names, user paths, tracker URLs, credentials).
 
-- `patches/`: `git format-patch` series on llama.cpp v0.8.0 (8642541b). Regenerate from the development repository
-  (branch series/6uo), never hand-edit a patch.
+- `patches/`: `git format-patch` series on llama.cpp v1.0.0 (b1b770d9). Regenerate from the development repository
+  (branch series/6uo-v1.0.0), never hand-edit a patch.
 - `scripts/`: install-cuda-10.2.sh, build.sh, test.sh: standalone, generic paths only.
 - `tools/mmvk-check.cpp`: strict kernel checker used by scripts/test.sh.
 - `docs/`: RESULTS.md (numbers must come from a gated release), PROVENANCE.md, AI-USAGE.md.

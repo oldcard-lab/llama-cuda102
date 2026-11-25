@@ -1,4 +1,4 @@
-This project patches llama.cpp (https://github.com/ggml-org/llama.cpp), release v0.8.0. The patches contain code
+This project patches llama.cpp (https://github.com/ggml-org/llama.cpp), release v1.0.0. The patches contain code
 from three sources, all under the MIT license reproduced below:
 
 - llama.cpp and ggml: Copyright (c) 2023-2026 The ggml authors.

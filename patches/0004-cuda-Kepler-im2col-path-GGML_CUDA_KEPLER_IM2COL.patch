@@ -1,4 +1,4 @@
-From 1a5579bfd5d0176db303a92064f21b0ad54b2071 Mon Sep 17 00:00:00 2001
+From 7102db5335c4badeee98394f0af200cd3a830d41 Mon Sep 17 00:00:00 2001
 From: oldcard-lab <oldcard-lab@localhost>
 Date: Tue, 24 Nov 2026 12:10:17 -0600
 Subject: [PATCH 4/5] cuda: Kepler im2col path (GGML_CUDA_KEPLER_IM2COL)
@@ -192,6 +192,3 @@ index f9ff6c7..fce4d59 100644
      const int threads_per_block = MIN((int)IC_KH_KW, CUDA_IM2COL_BLOCK_SIZE);
      dim3 block_nums(MIN(OW, MAX_GRIDDIM_Y), MIN(N_OH, MAX_GRIDDIM_Z));
  
--- 
-2.56.1.windows.1
-

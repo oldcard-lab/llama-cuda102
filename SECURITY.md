@@ -5,9 +5,9 @@ hardware means pinning old software, so read this before you run it anywhere tha
 
 ## What to know
 
-- **It is frozen on llama.cpp v0.8.0** (upstream commit 8642541). Security fixes that upstream llama.cpp released
+- **It is frozen on llama.cpp v1.0.0** (upstream commit b1b770d, 2026-11-13). Security fixes that upstream llama.cpp released
   after that version are not included. llama.cpp has published security advisories in the past (for example in
-  model-file parsing and in `llama-server`). We have not checked which of them apply to v0.8.0. See
+  model-file parsing and in `llama-server`). We have not checked which of them apply to v1.0.0. See
   https://github.com/ggml-org/llama.cpp/security for upstream's advisories.
 - **It depends on end-of-life NVIDIA software.** CUDA 10.2 and the NVIDIA 470 legacy driver no longer receive
   security updates. That is the price of supporting Kepler cards.
