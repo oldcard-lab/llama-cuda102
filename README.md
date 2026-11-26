@@ -68,13 +68,21 @@ The series applies to llama.cpp **v1.0.0** (commit `b1b770d90d94cad9e9ea5b993bdb
 
 Requirements: Windows 10/11 x64; an NVIDIA driver that supports CUDA 10.2 (version 441.22 or newer; the last Kepler
 driver branch is 47x); Visual Studio 2022 Build Tools with the C++ workload; LLVM 22; CMake; Ninja; and Git.
-Open an elevated PowerShell window for the toolkit install. Then run:
+Run only the toolkit install in an elevated PowerShell window:
 
 ```powershell
-scripts\install-cuda-10.2.ps1
+scripts\install-cuda-10.2.ps1 C:\cuda-10.2
+```
+
+In a normal PowerShell window, build and test:
+
+```powershell
 scripts\build.ps1 work C:\cuda-10.2
 scripts\test.ps1 work C:\cuda-10.2
 ```
+
+Executables in `work\llama.cpp\build\bin` need `C:\cuda-10.2\bin` on PATH to run; `test.ps1` sets it itself.
+For other runs, use `$env:Path = 'C:\cuda-10.2\bin;' + $env:Path`.
 
 ## Using it
 
