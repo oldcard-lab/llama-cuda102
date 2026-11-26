@@ -1,0 +1,319 @@
+From ae8d7eccaa9b59400307f30ad8b538291b0feee4 Mon Sep 17 00:00:00 2001
+From: oldcard-lab <oldcard-lab@localhost>
+Date: Thu, 26 Nov 2026 14:02:28 -0600
+Subject: [PATCH 6/6] cuda: Windows Kepler graphs and timer
+
+---
+ ggml/src/ggml-cuda/ggml-cuda.cu | 170 +++++++++++++++++++++++++++++++-
+ ggml/src/ggml-cuda/mmvk.cu      |  43 ++++++--
+ ggml/src/ggml-cuda/mmvk.cuh     |   2 +
+ 3 files changed, 208 insertions(+), 7 deletions(-)
+
+diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
+index e6e04cb..87ef353 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -1,3 +1,16 @@
++#ifdef _WIN32
++#ifndef NOMINMAX
++#define NOMINMAX
++#endif
++#ifndef WIN32_LEAN_AND_MEAN
++#define WIN32_LEAN_AND_MEAN
++#endif
++#include <windows.h>
++#include <cstring>
++#include <cstdlib>
++#include <mutex>
++#endif
++
+ #include "ggml-cuda.h"
+ #include "ggml-impl.h"
+ #include "ggml-backend-impl.h"
+@@ -153,6 +166,99 @@ static int ggml_cuda_env_int(const char * name, int default_value) {
+     return env != nullptr ? std::atoi(env) : default_value;
+ }
+ 
++#ifdef _WIN32
++static void ggml_cuda_init_windows() {
++    static std::once_flag init_flag;
++    std::call_once(init_flag, []() {
++        const bool no_timer = ggml_cuda_env_flag("GGML_CUDA_WIN_NO_TIMER");
++        if (!no_timer) {
++#ifndef PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION
++#define PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION 0x4U
++#endif
++            using set_process_information_fn = BOOL (WINAPI *)(HANDLE, int, void *, DWORD);
++            const HMODULE kernel32 = GetModuleHandleA("kernel32.dll");
++            const auto set_process_information = kernel32 == nullptr ? nullptr :
++                reinterpret_cast<set_process_information_fn>(GetProcAddress(kernel32, "SetProcessInformation"));
++            if (set_process_information != nullptr) {
++                struct process_power_throttling_state {
++                    ULONG Version;
++                    ULONG ControlMask;
++                    ULONG StateMask;
++                } ignore_timer_resolution = { 1, PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION, 0 };
++                (void) set_process_information(GetCurrentProcess(), 4, &ignore_timer_resolution, sizeof(ignore_timer_resolution));
++                process_power_throttling_state execution_speed = { 1, 0x1U, 0 };
++                (void) set_process_information(GetCurrentProcess(), 4, &execution_speed, sizeof(execution_speed));
++            }
++
++            using winmm_period_fn = unsigned int (WINAPI *)(unsigned int);
++            static HMODULE winmm = LoadLibraryA("winmm.dll");
++            static winmm_period_fn time_end_period = nullptr;
++            const auto time_begin_period = winmm == nullptr ? nullptr :
++                reinterpret_cast<winmm_period_fn>(GetProcAddress(winmm, "timeBeginPeriod"));
++            time_end_period = winmm == nullptr ? nullptr :
++                reinterpret_cast<winmm_period_fn>(GetProcAddress(winmm, "timeEndPeriod"));
++            if (time_begin_period != nullptr && time_end_period != nullptr && time_begin_period(1) == 0) {
++                // Assumes ggml-cuda stays loaded for the process lifetime; deliberately retain winmm.
++                std::atexit([]() {
++                    if (time_end_period != nullptr) {
++                        (void) time_end_period(1);
++                    }
++                });
++            }
++        }
++
++        const char * schedule = std::getenv("GGML_CUDA_SCHED");
++        if (schedule == nullptr) {
++            return;
++        }
++        unsigned int flags;
++        if (std::strcmp(schedule, "auto") == 0) {
++            flags = cudaDeviceScheduleAuto;
++        } else if (std::strcmp(schedule, "spin") == 0) {
++            flags = cudaDeviceScheduleSpin;
++        } else if (std::strcmp(schedule, "yield") == 0) {
++            flags = cudaDeviceScheduleYield;
++        } else if (std::strcmp(schedule, "blocking") == 0) {
++            flags = cudaDeviceScheduleBlockingSync;
++        } else {
++            GGML_LOG_WARN("%s: ignoring invalid GGML_CUDA_SCHED=\"%s\" (expected auto, spin, yield, or blocking)\n", __func__, schedule);
++            return;
++        }
++
++        int device_count = 0;
++        if (cudaGetDeviceCount(&device_count) != cudaSuccess) {
++            (void) cudaGetLastError();
++            return;
++        }
++        int orig_device = 0;
++        const bool has_orig_device = (cudaGetDevice(&orig_device) == cudaSuccess);
++        if (!has_orig_device) {
++            (void) cudaGetLastError();
++        }
++        for (int device = 0; device < device_count; ++device) {
++            if (cudaSetDevice(device) != cudaSuccess) {
++                (void) cudaGetLastError();
++                continue;
++            }
++            const cudaError_t err = cudaSetDeviceFlags(flags);
++            if (err == cudaErrorSetOnActiveProcess) {
++                GGML_LOG_WARN("%s: CUDA context already active on device %d, ignoring GGML_CUDA_SCHED=\"%s\"\n", __func__, device, schedule);
++                (void) cudaGetLastError();
++                continue;
++            }
++            if (err != cudaSuccess) {
++                GGML_LOG_WARN("%s: failed to set CUDA scheduling mode on device %d: %s\n",
++                    __func__, device, cudaGetErrorString(err));
++                (void) cudaGetLastError();
++            }
++        }
++        if (has_orig_device) {
++            (void) cudaSetDevice(orig_device);
++        }
++    });
++}
++#endif // _WIN32
++
+ static bool ggml_cuda_env_set(const char * name) {
+     return getenv(name) != nullptr;
+ }
+@@ -257,6 +363,9 @@ static int ggml_cuda_parse_id(const char * devName) {
+ #endif // defined(GGML_USE_HIP)
+ 
+ static ggml_cuda_device_info ggml_cuda_init() {
++#ifdef _WIN32
++    ggml_cuda_init_windows();
++#endif
+     ggml_cuda_device_info info = {};
+ 
+     cudaError_t err = cudaGetDeviceCount(&info.physical_device_count);
+@@ -3368,6 +3477,11 @@ static bool ggml_cuda_graph_debug_enabled() {
+ static bool ggml_cuda_graph_check_compability(ggml_cgraph * cgraph) {
+ 
+     bool use_cuda_graph = true;
++#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && (CUBLAS_VER_MAJOR < 11 || (CUBLAS_VER_MAJOR == 11 && CUBLAS_VER_MINOR < 2))
++    const int dev = ggml_cuda_get_device();
++    const int cc = ggml_cuda_info().devices[dev].cc;
++    const int warp_size = ggml_cuda_info().devices[dev].warp_size;
++#endif
+     // Loop over nodes in GGML graph to obtain info needed for CUDA graph
+ 
+     for (int i = 0; i < cgraph->n_nodes; i++) {
+@@ -3377,6 +3491,42 @@ static bool ggml_cuda_graph_check_compability(ggml_cgraph * cgraph) {
+             continue;
+         }
+ 
++#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && (CUBLAS_VER_MAJOR < 11 || (CUBLAS_VER_MAJOR == 11 && CUBLAS_VER_MINOR < 2))
++        if (node->op == GGML_OP_CONV_2D || node->op == GGML_OP_CONV_3D ||
++                node->op == GGML_OP_OUT_PROD || node->op == GGML_OP_SOLVE_TRI ||
++                (node->op == GGML_OP_SSM_SCAN && cc >= GGML_CUDA_CC_TURING)) {
++            use_cuda_graph = false;
++        } else if (node->op == GGML_OP_MUL_MAT) {
++            const ggml_tensor * src0 = node->src[0];
++            const ggml_tensor * src1 = node->src[1];
++            const int64_t ne11 = src1->ne[1];
++            const int64_t ne01 = src0->ne[1];
++            const int64_t ne2 = src1->ne[2];
++            const int64_t ne3 = src1->ne[3];
++            const bool bad_padding_clear = src0->buffer &&
++                ggml_backend_buffer_get_usage(src0->buffer) == GGML_BACKEND_BUFFER_USAGE_COMPUTE &&
++                ggml_nbytes(src0) != ggml_backend_buffer_get_alloc_size(src0->buffer, src0) && src0->view_src;
++            const bool use_custom_kernel = ggml_cuda_op_mul_mat_use_fwht(node) ||
++                ggml_cuda_can_use_mmvk_attn(src0, src1, node, cc) ||
++                (!bad_padding_clear && src1->type == GGML_TYPE_F32 && node->type == GGML_TYPE_F32 &&
++                    (ggml_cuda_should_use_mmvf(src0, cc, warp_size, ne11) ||
++                     (ne01 == 1 && ne11 > MMVF_MAX_BATCH_SIZE && ne2 == 1 && ne3 == 1 &&
++                      src0->type == GGML_TYPE_F32 && ggml_is_contiguous(src0) &&
++                      ggml_is_contiguous(src1) && ggml_is_contiguous(node) &&
++                      ggml_cuda_should_use_mmvf(src1, cc, warp_size, 1)) ||
++                     ggml_cuda_should_use_mmf(src0->type, cc, warp_size, src0->ne, src0->nb, ne11, false) ||
++                     ggml_cuda_should_use_mmq_few(src0, src1, cc) ||
++                     ggml_cuda_should_use_mmvq(src0->type, cc, ne11) ||
++                     ggml_cuda_should_use_mmq(src0->type, cc, ne11, 0)));
++            if (!use_custom_kernel) {
++                use_cuda_graph = false;
++            }
++        }
++        if (!use_cuda_graph && ggml_cuda_graph_debug_enabled()) {
++            GGML_LOG_DEBUG("%s: disabling CUDA graphs because a node may call cuBLAS before version 11.2\n", __func__);
++        }
++#endif
++
+         // [TAG_MUL_MAT_ID_CUDA_GRAPHS]
+         if (node->op == GGML_OP_MUL_MAT_ID) {
+             const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
+@@ -5564,8 +5714,26 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
+ static bool ggml_cuda_graph_set_enabled(ggml_backend_cuda_context * cuda_ctx, const void * graph_key) {
+     ggml_cuda_graph * graph = cuda_ctx->cuda_graph(graph_key);
+ 
++    static const bool disable_graphs = ggml_cuda_env_flag("GGML_CUDA_DISABLE_GRAPHS");
++    if (disable_graphs) {
++        if (!graph->disable_due_to_gpu_arch && ggml_cuda_graph_debug_enabled()) {
++            GGML_LOG_DEBUG("%s: disabling CUDA graphs due to GGML_CUDA_DISABLE_GRAPHS\n", __func__);
++        }
++        // graph_compute checks graph->is_enabled(), not this function's return value.
++        graph->disable_due_to_gpu_arch = true;
++        return false;
++    }
++
+     if (graph->instances.empty()) {
+-        if (ggml_cuda_info().devices[cuda_ctx->device].cc < GGML_CUDA_CC_VOLTA) {
++        const int cc = ggml_cuda_info().devices[cuda_ctx->device].cc;
++        const bool is_kepler = cc >= GGML_CUDA_CC_KEPLER && cc < 500;
++#ifdef _WIN32
++        const bool unsupported_arch = cc < GGML_CUDA_CC_VOLTA && !is_kepler;
++#else
++        const bool allow_kepler = ggml_cuda_env_flag("GGML_CUDA_KEPLER_GRAPHS");
++        const bool unsupported_arch = cc < GGML_CUDA_CC_VOLTA && !(allow_kepler && is_kepler);
++#endif
++        if (unsupported_arch) {
+             if (!graph->disable_due_to_gpu_arch && ggml_cuda_graph_debug_enabled()) {
+                 GGML_LOG_DEBUG("%s: disabling CUDA graphs due to GPU architecture\n", __func__);
+             }
+diff --git a/ggml/src/ggml-cuda/mmvk.cu b/ggml/src/ggml-cuda/mmvk.cu
+index c1f9e5d..da4c90f 100644
+--- a/ggml/src/ggml-cuda/mmvk.cu
++++ b/ggml/src/ggml-cuda/mmvk.cu
+@@ -2018,7 +2018,16 @@ struct mmvk_texture_entry {
+     cudaTextureObject_t object = 0;
+ };
+ 
+-static bool mmvk_q3k_texture(const float * ptr, const size_t extent_bytes, cudaTextureObject_t & object, int & y_off) {
++static bool mmvk_q3k_texture(const float * ptr, const size_t extent_bytes, cudaTextureObject_t & object, int & y_off,
++        cudaStream_t stream) {
++#if CUDART_VERSION >= 10010
++    cudaStreamCaptureStatus cap_status = cudaStreamCaptureStatusNone;
++    if (cudaStreamIsCapturing(stream, &cap_status) == cudaSuccess && cap_status != cudaStreamCaptureStatusNone) {
++        return false;
++    }
++#else
++    (void) stream;
++#endif
+     static std::mutex mutex;
+     static std::array<mmvk_texture_entry, 64> entries{};
+     static size_t next_entry = 0;
+@@ -3552,7 +3561,7 @@ bool ggml_cuda_mul_mat_vec_kepler(
+                         cudaTextureObject_t texture = 0;
+                         int y_off = 0;
+                         if (extent_floats <= SIZE_MAX / sizeof(float)
+-                                && mmvk_q3k_texture(y_col, static_cast<size_t>(extent_floats) * sizeof(float), texture, y_off)) {
++                                && mmvk_q3k_texture(y_col, static_cast<size_t>(extent_floats) * sizeof(float), texture, y_off, stream)) {
+                             if (variant == nullptr || std::strcmp(variant, "d32c2t") != 0) {
+                                 launch_mmvk_q3_k_d32c4r4t(src0_d, y_col, dst_col, nb, nrows, stride_row_x,
+                                     stride_column_y, stride_column_dst, channel_ratio, stride_channel_x, stride_channel_y, stride_channel_dst,
+@@ -3874,13 +3883,12 @@ bool ggml_cuda_mul_mat_vec_kepler(
+ #endif
+ }
+ 
+-bool ggml_cuda_mul_mat_vec_kepler_attn(
+-        ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
++bool ggml_cuda_can_use_mmvk_attn(
++        const ggml_tensor * src0, const ggml_tensor * src1, const ggml_tensor * dst, int cc) {
+ #if defined(GGML_USE_HIP) || defined(GGML_USE_MUSA)
+-    GGML_UNUSED_VARS(ctx, src0, src1, dst);
++    GGML_UNUSED_VARS(src0, src1, dst, cc);
+     return false;
+ #else
+-    const int cc = ggml_cuda_info().devices[ctx.device].cc;
+     if (!GGML_CUDA_CC_IS_NVIDIA(cc) || cc < GGML_CUDA_CC_KEPLER || cc >= 500 || !ggml_cuda_kepler_attn_enabled()) {
+         return false;
+     }
+@@ -3929,6 +3937,29 @@ bool ggml_cuda_mul_mat_vec_kepler_attn(
+     if (!kq && !kqv) {
+         return false;
+     }
++    return true;
++#endif
++}
++
++bool ggml_cuda_mul_mat_vec_kepler_attn(
++        ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
++#if defined(GGML_USE_HIP) || defined(GGML_USE_MUSA)
++    GGML_UNUSED_VARS(ctx, src0, src1, dst);
++    return false;
++#else
++    const int cc = ggml_cuda_info().devices[ctx.device].cc;
++    if (!ggml_cuda_can_use_mmvk_attn(src0, src1, dst, cc)) {
++        return false;
++    }
++
++    const bool dim0_head = src0->ne[0] == 64 || src0->ne[0] == 80 || src0->ne[0] == 96 || src0->ne[0] == 128 || src0->ne[0] == 256;
++    const bool dim1_head = src0->ne[1] == 64 || src0->ne[1] == 80 || src0->ne[1] == 96 || src0->ne[1] == 128 || src0->ne[1] == 256;
++    bool kq = dim0_head && !dim1_head;
++    bool kqv = dim1_head && !dim0_head;
++    if (dim0_head && dim1_head) {
++        kq = src0->nb[0] < src0->nb[1];
++        kqv = src0->nb[1] < src0->nb[0];
++    }
+     const int rows = static_cast<int>(src0->ne[1]);
+     const int k = static_cast<int>(src0->ne[0]);
+     const int head_ratio = static_cast<int>(dst->ne[2] / src0->ne[2]);
+diff --git a/ggml/src/ggml-cuda/mmvk.cuh b/ggml/src/ggml-cuda/mmvk.cuh
+index 3645d46..6029c09 100644
+--- a/ggml/src/ggml-cuda/mmvk.cuh
++++ b/ggml/src/ggml-cuda/mmvk.cuh
+@@ -4,6 +4,8 @@
+ 
+ bool ggml_cuda_should_use_mmvk(const ggml_tensor * src0, const ggml_tensor * src1, const ggml_tensor * dst, int cc);
+ 
++bool ggml_cuda_can_use_mmvk_attn(const ggml_tensor * src0, const ggml_tensor * src1, const ggml_tensor * dst, int cc);
++
+ bool ggml_cuda_mul_mat_vec_kepler(
+     ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst);
+ 
+-- 
+2.56.1.windows.1
+

@@ -84,6 +84,14 @@ scripts\test.ps1 work C:\cuda-10.2
 Executables in `work\llama.cpp\build\bin` need `C:\cuda-10.2\bin` on PATH to run; `test.ps1` sets it itself.
 For other runs, use `$env:Path = 'C:\cuda-10.2\bin;' + $env:Path`.
 
+On Windows, `scripts\build.ps1` enables `-DGGML_CUDA_GRAPHS=ON` by default (override with `$env:GGML_CUDA_GRAPHS = 'OFF'`).
+Patch `0006` enables CUDA 10.2 graphs for Kepler non-cuBLAS decode graphs and requests 1 ms Windows timer resolution
+(with Windows 11 power-throttling opt-out), which recovers roughly 3x token-generation throughput lost to WDDM launch
+batching and the default 15.6 ms Windows timer tick. Runtime controls: `GGML_CUDA_DISABLE_GRAPHS=1` (graphs off),
+`GGML_CUDA_WIN_NO_TIMER=1` (leave system timer resolution untouched), and `GGML_CUDA_SCHED=auto|spin|yield|blocking`.
+Under WDDM on a 1 GB card driving a desktop, Windows reserves roughly 120-125 MiB of idle VRAM, leaving ~900 MiB for
+models and context (models up to 1.5B 3-bit fit; 1.7B models require either a headless secondary GPU setup or Linux).
+
 ## Using it
 
 Run models fully on the GPU (`-ngl 99`) and keep flash attention off (`-fa off`: this build has no flash-attention
@@ -105,7 +113,7 @@ llama-cli    -m Qwen3-1.7B-Q3_K_S.gguf  -ngl 99 -fa off -c 1024 -ub 32
 
 | Card | Compute capability | Status |
 |---|---|---|
-| GeForce GTX 650 Ti (GK106, 1 GB) | 3.0 | Tested: every release gated on it |
+| GeForce GTX 650 Ti (GK106, 1 GB) | 3.0 | Tested: Linux (Ubuntu 26.04, driver 470.256.02) and Windows 11 x64 (driver 456.71 WDDM) |
 | Other sm_30 cards (GTX 660 / 670 / 680 / 760 / 770, ...) | 3.0 | Should work, untested |
 | GTX 780 / Titan, GT 710 / 730 (GK208), Tesla K20 / K40 | 3.5 | Not built for yet (CUDA 10.2 supports it; untested) |
 | Tesla K80 | 3.7 | Not targeted |
@@ -118,7 +126,9 @@ Reports from other cards are welcome as issues. For sm_35 / sm_37 today, see
 ## Limits
 
 - BF16 operations run on the CPU (CUDA 10.2 has no BF16 support).
-- No flash attention; no CUDA graphs.
+- No flash attention. CUDA graphs are enabled by default on Windows for Kepler non-cuBLAS decode graphs (and opt-in on
+  Linux via `GGML_CUDA_KEPLER_GRAPHS=1`); batched graphs that invoke cuBLAS 10.2 skip graph capture because cuBLAS
+  versions before 11.2 lack `cublasSetWorkspace`.
 - The Kepler kernels and the prompt path only run below compute capability 5.0. The compatibility port (patches
   0001-0002) targets old CUDA toolkits and old GPUs; it has been tested only on the GTX 650 Ti, so this build is not
   meant for newer cards.
@@ -129,7 +139,8 @@ Reports from other cards are welcome as issues. For sm_35 / sm_37 today, see
   [#29961](https://github.com/ggml-org/llama.cpp/discussions/29961), released under the MIT license.
   Forward-ported to v0.8.0 and then to v1.0.0 here.
 - **This project (oldcard-lab)**: the fixes to the port (0002), the Kepler kernels and prompt path (0003), the
-  im2col path (0004), the FunctionGemma parser (0005), the scripts and the strict kernel checker.
+  im2col path (0004), the FunctionGemma parser (0005), the Windows Kepler CUDA graphs and timer patch (0006), the
+  scripts and the strict kernel checker.
 - **The ggml authors**: llama.cpp and ggml themselves (MIT).
 
 Details per patch: [docs/PROVENANCE.md](docs/PROVENANCE.md). The

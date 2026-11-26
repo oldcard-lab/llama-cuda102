@@ -105,6 +105,39 @@ The ggml YOLO numbers use ggml's `examples/yolo` with batch norm folded into the
 the YOLOX ggml graph is a separate port (not part of this patch series). cuDNN is proprietary and is not part of
 this project; it is listed as a comparison.
 
+## Windows 11 parity (same GTX 650 Ti, driver 456.71 WDDM, patch 0006)
+
+Measured on the same GeForce GTX 650 Ti and i7-4770 booted into Windows 11 Pro x64 (driver 456.71 WDDM, CUDA 10.2.89,
+clang 22.1.8, `-DGGML_CUDA_GRAPHS=ON`). Under WDDM with the card hosting the desktop session, Windows uses 120-125 MiB
+of VRAM at idle (~900 MiB free vs ~1024 MiB on headless Linux); every model and workload that fits in ~900 MiB passes
+with zero `nvlddmkm` or Display 4101 TDR events:
+
+- **Correctness:** `test-backend-ops` ALL ops: `15145 OK, 0 FAIL` (same 4 cases too large for 1 GB as Linux);
+  `tools/mmvk-check`: `597/597` plain (worst relative error `1.21e-7`) and `597/597` `--weights` (`1.88e-7`); all 18
+  gated models that fit in ~900 MiB match Linux perplexity to 4 decimal places (`0.0000%-0.005%` difference) and match
+  `-ub 1` decode vs batched perplexity within `0.02%`.
+- **Token generation (`tg128`, tokens/s):** LFM2.5-350M Q4_K_M `84.9` (`tg64 86.6`, up from `27.9` before patch 0006;
+  Linux `88.9`), LFM2.5-350M Q8_0 `58.2` (Linux `59.6`), Qwen3-0.6B Q4_K_M `44.9` (Linux `45.8`), Qwen3-0.6B Q8_0
+  `32.3` (Linux `32.6`), Qwen3.5-0.8B Q4_K_M `35.0` (Linux `35.6`), LFM2.5-1.2B Q4_K_M `32.5` (Linux `32.6`),
+  TinyLlama-1.1B Q4_K_M `34.5` (Linux `34.8`), SmolLM2-360M Q8_0 `43.8` (Linux `44.8`), granite-4.0-350m Q8_0 `46.8`
+  (Linux `47.9`), Qwen2.5-Coder-1.5B Q3_K_S `23.4` (Linux `23.8`), granite-4.0-h-1b Q3_K_S `22.4` (Linux `22.8`).
+- **Prompt processing (`pp256`, tokens/s):** LFM2.5-350M Q4_K_M `-ub 128`: `615.4` (Linux `616.2`); Qwen3-0.6B Q8_0
+  `-ub 128`: `320.6` (Linux `321.8`); LFM2.5-1.2B Q4_K_M `-ub 64`: `94.9` (Linux `95.4`); Qwen2.5-Coder-1.5B Q3_K_S
+  `-ub 32`: `32.2` (Linux `32.4`).
+- **Agent-style calls:** LFM2.5-350M `2048 + 128`: `5.4 s` (Linux `5.3 s`); Qwen2.5-Coder-1.5B `1024 + 128`: `38.6 s`
+  (Linux `38.2 s`).
+- **FP8 (`F8_E4M3`):** LFM2.5-350M GPU vs CPU perplexity `141.1579 vs 141.1882` (`0.0215%` at `-ub 128`) and
+  `43.7412 vs 43.7489` (`0.0176%` at `-ub 1`); `pp128 642.2 t/s`, `tg64 17.4 t/s`.
+- **Speech (whisper.cpp 1.9.5 built against this ggml, 11 s clip):** `base.en q8_0` `1.31 s` (Linux `1.32 s`),
+  `small.en q8_0` `2.70 s` (Linux `3.05 s`).
+- **Tool calls, embeddings, reranking, vision, speculative & server soak:** FunctionGemma 4/4 tool-call prompts,
+  granite-4.0-350m `--jinja`, `embeddinggemma-300M`, `bge-reranker-v2-m3`, VLM (`SmolVLM2-256M`, `granite-docling-258M`,
+  `LFM2.5-VL-450M` at `-c 2048`), `yolox-ggml` (`max abs 0` vs reference), OpenCV 4.12 + cuDNN 7.6.5 YOLOX (identical
+  detections to Linux/CPU), n-gram speculative decoding on `Qwen2.5-Coder-0.5B` (`35.4 -> 51.6 t/s`, +46%, bit-identical
+  output), and 72-request concurrent `llama-server` soak (`-np 1/2/4`, 72/72 OK) all pass with zero GPU faults.
+- **WDDM VRAM limit note:** 1.7B/2B models and `-c 4096` 450M-500M VLMs that fit on headless Linux OOM on CUDA under
+  120-125 MiB WDDM desktop reservation unless an integrated GPU hosts the Windows desktop.
+
 ## Negative results (kept so nobody repeats them)
 
 - Texture-cache loads of the activation vector at 1 token: no gain. More columns per launch than 4-8: slower.

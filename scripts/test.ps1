@@ -73,7 +73,7 @@ try {
             }
             # Windows-only crash gate: NTSTATUS error exits cover crashes that do not print Unix abort text.
             $tboStatus = [BitConverter]::ToUInt32([BitConverter]::GetBytes([int]$tboExit), 0)
-            if (($tboStatus -band [uint32]0xC0000000) -eq [uint32]0xC0000000) {
+            if (($tboStatus -band [uint32]0xC0000000L) -eq [uint32]0xC0000000L) {
                 $failed = $true
                 Write-Output ("  Windows test binary crash (NTSTATUS 0x{0:X8})" -f $tboStatus)
             }
@@ -83,12 +83,41 @@ try {
 
     Write-Output '== 2. mmvk-check (strict Kepler kernel check)'
     $libraryNames = @('ggml.lib', 'ggml-base.lib', 'ggml-cuda.lib')
-    $libraryDirs = @($binDir, (Join-Path $buildDir 'lib'))
-    $selectedLibraryDir = $null
-    foreach ($candidateDir in $libraryDirs) {
-        if ((@($libraryNames | Where-Object { Test-Path -LiteralPath (Join-Path $candidateDir $_) -PathType Leaf })).Count -eq 3) {
-            $selectedLibraryDir = $candidateDir
-            break
+    $libraryDirs = @(
+        $binDir,
+        (Join-Path $buildDir 'lib'),
+        (Join-Path $buildDir 'ggml\src'),
+        (Join-Path $buildDir 'ggml\src\ggml-cuda')
+    )
+    $resolvedLibraries = @{}
+    $librariesResolved = $true
+    foreach ($libraryName in $libraryNames) {
+        $resolvedPath = $null
+        $libraryAmbiguous = $false
+        foreach ($candidateDir in $libraryDirs) {
+            $candidatePath = Join-Path $candidateDir $libraryName
+            if (Test-Path -LiteralPath $candidatePath -PathType Leaf) {
+                $resolvedPath = (Get-Item -LiteralPath $candidatePath).FullName
+                break
+            }
+        }
+
+        if ($null -eq $resolvedPath) {
+            $libraryMatches = @(Get-ChildItem -LiteralPath $buildDir -Recurse -File -Filter $libraryName -ErrorAction SilentlyContinue)
+            if ($libraryMatches.Count -gt 1) {
+                Write-Output ("multiple matches for $libraryName under ${buildDir}:`n  " + ($libraryMatches.FullName -join "`n  "))
+                $librariesResolved = $false
+                $libraryAmbiguous = $true
+            } elseif ($libraryMatches.Count -eq 1) {
+                $resolvedPath = $libraryMatches[0].FullName
+            }
+        }
+
+        if ($null -eq $resolvedPath -and -not $libraryAmbiguous) {
+            Write-Output "missing library $libraryName under $buildDir"
+            $librariesResolved = $false
+        } elseif ($null -ne $resolvedPath) {
+            $resolvedLibraries[$libraryName] = $resolvedPath
         }
     }
 
@@ -101,16 +130,15 @@ try {
     } elseif (-not (Test-Path -LiteralPath (Join-Path $src 'ggml\include\ggml.h') -PathType Leaf)) {
         Write-Output "missing ggml headers under: $src"
         $failed = $true
-    } elseif ($null -eq $selectedLibraryDir) {
-        Write-Output "mmvk-check build failed: all three ggml libraries must be in $binDir or $(Join-Path $buildDir 'lib')"
+    } elseif (-not $librariesResolved) {
         $failed = $true
     } else {
         $checkerExe = Join-Path $binDir 'mmvk-check.exe'
         $includeDir = Join-Path $src 'ggml\include'
         $compileArgs = @('-O2', '-std=c++17', '--target=x86_64-pc-windows-msvc', '-fms-runtime-lib=dll',
             '-DGGML_SHARED', '-DGGML_BACKEND_SHARED', "-I$includeDir", $checkerSource,
-            (Join-Path $selectedLibraryDir 'ggml.lib'), (Join-Path $selectedLibraryDir 'ggml-base.lib'),
-            (Join-Path $selectedLibraryDir 'ggml-cuda.lib'), '-fuse-ld=lld', '-o', $checkerExe)
+            $resolvedLibraries['ggml.lib'], $resolvedLibraries['ggml-base.lib'],
+            $resolvedLibraries['ggml-cuda.lib'], '-fuse-ld=lld', '-o', $checkerExe)
         & $clang @compileArgs
         $compileExit = $LASTEXITCODE
         if ($compileExit -ne 0) {
@@ -132,7 +160,8 @@ try {
                     $checkerExit = $LASTEXITCODE
                     # Windows-only crash gate: report NTSTATUS crashes that have no Unix abort text.
                     $checkerStatus = [BitConverter]::ToUInt32([BitConverter]::GetBytes([int]$checkerExit), 0)
-                    if (($checkerStatus -band [uint32]0xC0000000) -eq [uint32]0xC0000000) {
+                    if (($checkerStatus -band [uint32]0xC0000000L) -eq [uint32]0xC0000000L) {
+                        $failed = $true
                         Write-Output ("  Windows test binary crash (NTSTATUS 0x{0:X8})" -f $checkerStatus)
                     }
                     $out = @($raw | ForEach-Object { [string]$_ })

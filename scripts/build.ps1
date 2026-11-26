@@ -18,6 +18,11 @@ $upstream = 'https://github.com/ggml-org/llama.cpp.git'
 $targets = if ($env:TARGETS) { $env:TARGETS } else { 'llama-cli llama-server llama-completion llama-bench test-backend-ops' }
 $clangMajor = if ($env:CLANG_VERSION) { $env:CLANG_VERSION } else { '22' }
 $jobs = if ($env:JOBS) { $env:JOBS } else { [Environment]::ProcessorCount }
+$cudaGraphs = if ($env:GGML_CUDA_GRAPHS) { $env:GGML_CUDA_GRAPHS.Trim().ToUpperInvariant() } else { 'ON' }
+if ($cudaGraphs -notin @('ON', 'OFF')) {
+    Write-Output 'GGML_CUDA_GRAPHS must be ON or OFF.'
+    exit 2
+}
 
 foreach ($tool in @('git', 'cmake', 'ninja')) {
     if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) {
@@ -133,7 +138,7 @@ $cmakeArgs = @(
     "-DCUDAToolkit_ROOT=$cudaForward", '-DCMAKE_CUDA_ARCHITECTURES=30',
     "-DCMAKE_CUDA_FLAGS=--cuda-path=$cudaForward --no-cuda-version-check -Wno-unknown-cuda-version",
     '-DCMAKE_LINKER_TYPE=LLD', '-DGGML_CUDA=ON', '-DGGML_NATIVE=ON',
-    '-DGGML_CUDA_GRAPHS=OFF', '-DGGML_CUDA_FA=OFF', '-DGGML_CUDA_NCCL=OFF', '-DGGML_CUDA_NO_VMM=ON',
+    "-DGGML_CUDA_GRAPHS=$cudaGraphs", '-DGGML_CUDA_FA=OFF', '-DGGML_CUDA_NCCL=OFF', '-DGGML_CUDA_NO_VMM=ON',
     '-DLLAMA_BUILD_HTML=OFF', '-DLLAMA_USE_PREBUILT_UI=OFF', '-DLLAMA_CURL=OFF',
     '-DLLAMA_BUILD_TESTS=ON', '-DLLAMA_BUILD_SERVER=ON', '-DLLAMA_BUILD_TOOLS=ON'
 )
