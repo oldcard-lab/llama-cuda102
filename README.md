@@ -71,8 +71,13 @@ driver branch is 47x); Visual Studio 2022 Build Tools with the C++ workload; LLV
 Run only the toolkit install in an elevated PowerShell window:
 
 ```powershell
-scripts\install-cuda-10.2.ps1 C:\cuda-10.2
+scripts\install-cuda-10.2.ps1
 ```
+
+`scripts\install-cuda-10.2.ps1 [DOWNLOAD_DIR] [LINK]` caches the 2.6 GB installer in `.\cuda-installer` by default,
+installs the CUDA 10.2 toolkit subpackages under `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v10.2` (leaving
+your existing NVIDIA driver alone), and creates a space-free directory junction at `C:\cuda-10.2` (CMake splits
+`--cuda-path` at spaces, so `build.ps1` and `test.ps1` use the junction path).
 
 In a normal PowerShell window, build and test:
 
