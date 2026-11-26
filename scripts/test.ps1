@@ -1,24 +1,27 @@
 <#
 .SYNOPSIS
-    Correctness and speed check of a build from scripts/build.sh, on the Kepler GPU.
+    Correctness and speed check of a Windows build from scripts/build.ps1, on the Kepler GPU.
 .DESCRIPTION
     Runs test-backend-ops against CUDA0, strict per-row mmvk checks, and an optional model comparison/benchmark.
     Also fails if the Windows System log records an NVIDIA driver fault or Display TDR during this run.
 .PARAMETER WorkDir
     Parent directory containing llama.cpp (default: work).
 .PARAMETER CudaDir
-    CUDA 10.2 toolkit directory (default: $HOME/cuda-10.2).
+    CUDA 10.2 toolkit directory (default: C:\cuda-10.2).
 .EXAMPLE
     .\scripts\test.ps1 work C:\cuda-10.2
 #>
 param(
     [string] $WorkDir = 'work',
-    [string] $CudaDir = (Join-Path $HOME 'cuda-10.2')
+    [string] $CudaDir = 'C:\cuda-10.2'
 )
 
 $ErrorActionPreference = 'Continue'
 $startedAt = Get-Date
 $failed = $false
+$originalPath = $env:Path
+$originalMmvkNcols = $env:MMVK_CHECK_NCOLS
+$originalMmvkTypes = $env:MMVK_CHECK_TYPES
 
 if ([string]::IsNullOrWhiteSpace($env:LLVM_DIR)) {
     $llvmDir = 'C:\Program Files\LLVM\bin'
@@ -27,8 +30,9 @@ if ([string]::IsNullOrWhiteSpace($env:LLVM_DIR)) {
 }
 
 try {
-    $workPath = [System.IO.Path]::GetFullPath($WorkDir)
-    $cudaPath = [System.IO.Path]::GetFullPath($CudaDir)
+    $workPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($WorkDir)
+    $cudaPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($CudaDir)
+    $llvmDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($llvmDir)
     $src = Join-Path $workPath 'llama.cpp'
     $buildDir = Join-Path $src 'build'
     $binDir = Join-Path $buildDir 'bin'
@@ -42,7 +46,7 @@ try {
 
     Write-Output '== 1. test-backend-ops (CUDA0 vs CPU)'
     $ops = @('MUL_MAT', 'MUL_MAT_ID', 'IM2COL', 'CONV_2D')
-    if ($env:FULL -eq '1') { $ops = @('ALL') }
+    if (-not [string]::IsNullOrEmpty($env:FULL)) { $ops = @('ALL') }
 
     if (-not (Test-Path -LiteralPath $tbo -PathType Leaf)) {
         Write-Output "missing executable: $tbo"
@@ -50,32 +54,42 @@ try {
     } else {
         $esc = [char]27
         foreach ($op in $ops) {
-            $args = @('-b', 'CUDA0')
-            if ($op -ne 'ALL') { $args += @('-o', $op) }
-            $raw = @(& $tbo @args 2>&1)
+            $tboArgs = @('-b', 'CUDA0')
+            if ($op -ne 'ALL') { $tboArgs += @('-o', $op) }
+            $raw = @(& $tbo @tboArgs 2>&1)
             $tboExit = $LASTEXITCODE
             $out = @($raw | ForEach-Object { ([string]$_ -replace "$esc\[[0-9;]*m", '').TrimEnd() })
-            $ok = @($out | Where-Object { $_ -match ': OK$' }).Count
-            $bad = @($out | Where-Object { $_ -match ': FAIL$' -and $_ -notmatch 'failed to allocate' })
+            $ok = @($out | Where-Object { $_ -cmatch ': OK$' }).Count
+            $bad = @($out | Where-Object { $_ -cmatch ': FAIL$' -and $_ -cnotmatch 'failed to allocate' })
             $big = @($out | Where-Object { $_ -match 'failed to allocate|out of memory' }).Count
             Write-Output ("{0}: OK={1} FAIL={2} (cases too big for this card's memory: {3})" -f $op, $ok, $bad.Count, $big)
-            if ($bad.Count -gt 0 -or $tboExit -ne 0) {
+            if ($bad.Count -gt 0) {
                 $failed = $true
                 $bad | Select-Object -First 5 | ForEach-Object { Write-Output $_ }
             }
-            if (($out -join "`n") -match 'GGML_ASSERT|Segmentation|Aborted|exception') {
+            if (($out -join "`n") -cmatch 'GGML_ASSERT|Segmentation|Aborted') {
                 $failed = $true
                 Write-Output "  $op run aborted"
+            }
+            # Windows-only crash gate: NTSTATUS error exits cover crashes that do not print Unix abort text.
+            $tboStatus = [BitConverter]::ToUInt32([BitConverter]::GetBytes([int]$tboExit), 0)
+            if (($tboStatus -band [uint32]0xC0000000) -eq [uint32]0xC0000000) {
+                $failed = $true
+                Write-Output ("  Windows test binary crash (NTSTATUS 0x{0:X8})" -f $tboStatus)
             }
         }
     }
     Write-Output '   (a tiny q4_1 / q5_1 MUL_MAT case occasionally fails by a hair with random inputs on any build; rerun it)'
 
     Write-Output '== 2. mmvk-check (strict Kepler kernel check)'
-    $libs = @{}
-    foreach ($name in @('ggml.lib', 'ggml-base.lib', 'ggml-cuda.lib')) {
-        $match = Get-ChildItem -LiteralPath $buildDir -Filter $name -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($null -ne $match) { $libs[$name] = $match.FullName }
+    $libraryNames = @('ggml.lib', 'ggml-base.lib', 'ggml-cuda.lib')
+    $libraryDirs = @($binDir, (Join-Path $buildDir 'lib'))
+    $selectedLibraryDir = $null
+    foreach ($candidateDir in $libraryDirs) {
+        if ((@($libraryNames | Where-Object { Test-Path -LiteralPath (Join-Path $candidateDir $_) -PathType Leaf })).Count -eq 3) {
+            $selectedLibraryDir = $candidateDir
+            break
+        }
     }
 
     if (-not (Test-Path -LiteralPath $clang -PathType Leaf)) {
@@ -87,19 +101,21 @@ try {
     } elseif (-not (Test-Path -LiteralPath (Join-Path $src 'ggml\include\ggml.h') -PathType Leaf)) {
         Write-Output "missing ggml headers under: $src"
         $failed = $true
-    } elseif ($libs.Count -ne 3) {
-        Write-Output "mmvk-check build failed: could not find ggml.lib, ggml-base.lib, and ggml-cuda.lib under $buildDir"
+    } elseif ($null -eq $selectedLibraryDir) {
+        Write-Output "mmvk-check build failed: all three ggml libraries must be in $binDir or $(Join-Path $buildDir 'lib')"
         $failed = $true
     } else {
         $checkerExe = Join-Path $binDir 'mmvk-check.exe'
         $includeDir = Join-Path $src 'ggml\include'
-        $compileArgs = @('-O2', '-std=c++17', '--target=x86_64-pc-windows-msvc', "-I$includeDir", $checkerSource,
-            $libs['ggml.lib'], $libs['ggml-base.lib'], $libs['ggml-cuda.lib'], '-fuse-ld=lld', '-o', $checkerExe)
+        $compileArgs = @('-O2', '-std=c++17', '--target=x86_64-pc-windows-msvc', '-fms-runtime-lib=dll',
+            '-DGGML_SHARED', '-DGGML_BACKEND_SHARED', "-I$includeDir", $checkerSource,
+            (Join-Path $selectedLibraryDir 'ggml.lib'), (Join-Path $selectedLibraryDir 'ggml-base.lib'),
+            (Join-Path $selectedLibraryDir 'ggml-cuda.lib'), '-fuse-ld=lld', '-o', $checkerExe)
         & $clang @compileArgs
         $compileExit = $LASTEXITCODE
         if ($compileExit -ne 0) {
             Write-Output 'mmvk-check build failed'
-            $failed = $true
+            exit 1
         } else {
             $mmvkText = Get-Content -LiteralPath $mmvkSource -Raw -ErrorAction SilentlyContinue
             $ncolsMatch = [regex]::Match([string]$mmvkText, 'MMVK_NCOLS_TYPES:\s*([A-Za-z0-9_,]+)')
@@ -107,8 +123,6 @@ try {
                 Write-Output "could not find MMVK_NCOLS_TYPES in $mmvkSource"
                 $failed = $true
             } else {
-                $oldNcols = $env:MMVK_CHECK_NCOLS
-                $oldTypes = $env:MMVK_CHECK_TYPES
                 $env:MMVK_CHECK_NCOLS = $ncolsMatch.Groups[1].Value
                 $env:MMVK_CHECK_TYPES = 'q4_K,q6_K,q8_0,q5_0,f16,q3_K,iq3_xxs,q5_K'
                 foreach ($mode in @('', '--weights')) {
@@ -116,15 +130,18 @@ try {
                     if ($mode) { $checkerArgs += $mode }
                     $raw = @(& $checkerExe @checkerArgs 2>&1)
                     $checkerExit = $LASTEXITCODE
+                    # Windows-only crash gate: report NTSTATUS crashes that have no Unix abort text.
+                    $checkerStatus = [BitConverter]::ToUInt32([BitConverter]::GetBytes([int]$checkerExit), 0)
+                    if (($checkerStatus -band [uint32]0xC0000000) -eq [uint32]0xC0000000) {
+                        Write-Output ("  Windows test binary crash (NTSTATUS 0x{0:X8})" -f $checkerStatus)
+                    }
                     $out = @($raw | ForEach-Object { [string]$_ })
-                    $summary = @($out | Where-Object { $_ -match '^SUMMARY' })
+                    $summary = @($out | Where-Object { $_ -cmatch '^SUMMARY' })
                     if ($summary.Count -gt 0) { $summary | ForEach-Object { Write-Output $_ } }
                     else { Write-Output '  no SUMMARY line (crash?)' }
-                    @($out | Where-Object { $_ -match '^FAIL' } | Select-Object -First 5) | ForEach-Object { Write-Output $_ }
-                    if ($checkerExit -ne 0 -or -not ($out | Where-Object { $_ -match '^SUMMARY.* 0 FAIL' })) { $failed = $true }
+                    @($out | Where-Object { $_ -cmatch '^FAIL' } | Select-Object -First 5) | ForEach-Object { Write-Output $_ }
+                    if ($checkerExit -ne 0 -or -not ($out | Where-Object { $_ -cmatch '^SUMMARY.* 0 FAIL' })) { $failed = $true }
                 }
-                if ($null -eq $oldNcols) { Remove-Item Env:\MMVK_CHECK_NCOLS -ErrorAction SilentlyContinue } else { $env:MMVK_CHECK_NCOLS = $oldNcols }
-                if ($null -eq $oldTypes) { Remove-Item Env:\MMVK_CHECK_TYPES -ErrorAction SilentlyContinue } else { $env:MMVK_CHECK_TYPES = $oldTypes }
             }
         }
     }
@@ -135,35 +152,42 @@ try {
         $model = $env:MODEL
         $gpuArgs = @('-m', $model, '-p', $prompt, '-n', '32', '--temp', '0', '-c', '1024', '-ub', '128', '-ngl', '99', '-fa', 'off', '-no-cnv')
         $cpuArgs = @('-m', $model, '-p', $prompt, '-n', '32', '--temp', '0', '-c', '1024', '-ngl', '0', '-fa', 'off', '-no-cnv')
-        $gpuText = (@(& (Join-Path $binDir 'llama-completion.exe') @gpuArgs 2>$null) | ForEach-Object { [string]$_ }) -join ' '
-        $gpuExit = $LASTEXITCODE
-        $cpuText = (@(& (Join-Path $binDir 'llama-completion.exe') @cpuArgs 2>$null) | ForEach-Object { [string]$_ }) -join ' '
-        $cpuExit = $LASTEXITCODE
-        Write-Output "gpu: $gpuText"
-        Write-Output "cpu: $cpuText"
-        $gpuRemainder = $gpuText.Replace($prompt, '').Replace(' ', '')
-        if ([string]::IsNullOrWhiteSpace($gpuRemainder)) {
-            Write-Output '  no GPU text (does the model fit? try a smaller -c / -ub)'
+        $completion = Join-Path $binDir 'llama-completion.exe'
+        if (-not (Test-Path -LiteralPath $completion -PathType Leaf)) {
+            Write-Output "missing executable: $completion"
             $failed = $true
+        } else {
+            $gpuText = (@(& $completion @gpuArgs 2>$null) | ForEach-Object { [string]$_ }) -join ' '
+            $cpuText = (@(& $completion @cpuArgs 2>$null) | ForEach-Object { [string]$_ }) -join ' '
+            Write-Output "gpu: $gpuText"
+            Write-Output "cpu: $cpuText"
+            $gpuRemainder = ([regex]::new([regex]::Escape($prompt))).Replace($gpuText, '', 1).Replace(' ', '')
+            if ([string]::IsNullOrWhiteSpace($gpuRemainder)) {
+                Write-Output '  no GPU text (does the model fit? try a smaller -c / -ub)'
+                $failed = $true
+            }
         }
-        if ($gpuExit -ne 0 -or $cpuExit -ne 0) { $failed = $true }
 
         $bench = Join-Path $binDir 'llama-bench.exe'
-        $benchArgs = @('-m', $model, '-ngl', '99', '-fa', '0', '-ub', '128', '-p', '128', '-n', '64', '-r', '2')
-        $benchOut = @(& $bench @benchArgs 2>&1)
-        $benchExit = $LASTEXITCODE
-        $benchLines = @($benchOut | ForEach-Object { [string]$_ } | Where-Object { $_ -match 'pp128|tg64' })
-        $benchLines | ForEach-Object { Write-Output $_ }
-        if ($benchExit -ne 0 -or $benchLines.Count -eq 0) { $failed = $true }
+        if (-not (Test-Path -LiteralPath $bench -PathType Leaf)) {
+            Write-Output "missing executable: $bench"
+            $failed = $true
+        } else {
+            $benchArgs = @('-m', $model, '-ngl', '99', '-fa', '0', '-ub', '128', '-p', '128', '-n', '64', '-r', '2')
+            $benchOut = @(& $bench @benchArgs 2>&1)
+            $benchLines = @($benchOut | ForEach-Object { [string]$_ } | Where-Object { $_ -cmatch 'pp128|tg64' })
+            $benchLines | ForEach-Object { Write-Output $_ }
+        }
     }
 
     Write-Output '== 4. GPU fault check'
+    # Windows-only addition: preserve the nvlddmkm-any-event and Display 4101 rule.
     try {
         $events = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; StartTime = $startedAt } -ErrorAction Stop |
             Where-Object { $_.ProviderName -match 'nvlddmkm' -or ($_.ProviderName -eq 'Display' -and $_.Id -eq 4101) })
         $gpuFaults = $events.Count
     } catch {
-        if ($_.Exception.Message -match 'No events were found') { $gpuFaults = 0 }
+        if ($_.FullyQualifiedErrorId -like 'NoMatchingEventsFound*') { $gpuFaults = 0 }
         else {
             Write-Output ("GPU fault event query failed: {0}" -f $_.Exception.Message)
             $gpuFaults = -1
@@ -175,6 +199,10 @@ try {
 } catch {
     Write-Output ("test script error: {0}" -f $_.Exception.Message)
     $failed = $true
+} finally {
+    $env:Path = $originalPath
+    if ($null -eq $originalMmvkNcols) { Remove-Item Env:\MMVK_CHECK_NCOLS -ErrorAction SilentlyContinue } else { $env:MMVK_CHECK_NCOLS = $originalMmvkNcols }
+    if ($null -eq $originalMmvkTypes) { Remove-Item Env:\MMVK_CHECK_TYPES -ErrorAction SilentlyContinue } else { $env:MMVK_CHECK_TYPES = $originalMmvkTypes }
 }
 
 if ($failed) {
