@@ -25,7 +25,7 @@ foreach ($tool in @('git', 'cmake', 'ninja')) {
         exit 2
     }
 }
-foreach ($compiler in @('clang.exe', 'clang++.exe')) {
+foreach ($compiler in @('clang.exe', 'clang++.exe', 'llvm-rc.exe')) {
     if (-not (Test-Path -LiteralPath (Join-Path $llvm $compiler))) {
         Write-Output "missing tool: $(Join-Path $llvm $compiler)"
         exit 2
@@ -128,6 +128,8 @@ $cmakeArgs = @(
     "-DCMAKE_CXX_COMPILER=$(Join-Path $llvm 'clang++.exe')",
     "-DCMAKE_CUDA_COMPILER=$(Join-Path $llvm 'clang++.exe')",
     "-DCMAKE_CUDA_HOST_COMPILER=$(Join-Path $llvm 'clang++.exe')",
+    # Windows only: clang's GNU-style driver enables the RC language; LLVM is not on PATH, so name llvm-rc directly.
+    "-DCMAKE_RC_COMPILER=$((Join-Path $llvm 'llvm-rc.exe') -replace '\\', '/')",
     "-DCUDAToolkit_ROOT=$cudaForward", '-DCMAKE_CUDA_ARCHITECTURES=30',
     "-DCMAKE_CUDA_FLAGS=--cuda-path=$cudaForward --no-cuda-version-check -Wno-unknown-cuda-version",
     '-DCMAKE_LINKER_TYPE=LLD', '-DGGML_CUDA=ON', '-DGGML_NATIVE=ON',
