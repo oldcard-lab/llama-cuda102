@@ -64,6 +64,18 @@ The binaries are in `work/llama.cpp/build/bin` (`llama-cli`, `llama-server`, `ll
 The series applies to llama.cpp **v1.0.0** (commit `b1b770d90d94cad9e9ea5b993bdbc383a522fb28`) with `git am --keep-cr`
 (one file in patch 0003 has CRLF line endings; `scripts/build.sh` does this for you).
 
+### Windows
+
+Requirements: Windows 10/11 x64; an NVIDIA driver that supports CUDA 10.2 (version 441.22 or newer; the last Kepler
+driver branch is 47x); Visual Studio 2022 Build Tools with the C++ workload; LLVM 22; CMake; Ninja; and Git.
+Open an elevated PowerShell window for the toolkit install. Then run:
+
+```powershell
+scripts\install-cuda-10.2.ps1
+scripts\build.ps1 work C:\cuda-10.2
+scripts\test.ps1 work C:\cuda-10.2
+```
+
 ## Using it
 
 Run models fully on the GPU (`-ngl 99`) and keep flash attention off (`-fa off`: this build has no flash-attention
