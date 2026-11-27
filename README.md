@@ -94,13 +94,17 @@ Patch `0006` enables CUDA 10.2 graphs for Kepler non-cuBLAS decode graphs and re
 (with Windows 11 power-throttling opt-out), which recovers roughly 3x token-generation throughput lost to WDDM launch
 batching and the default 15.6 ms Windows timer tick. Runtime controls: `GGML_CUDA_DISABLE_GRAPHS=1` (graphs off),
 `GGML_CUDA_WIN_NO_TIMER=1` (leave system timer resolution untouched), and `GGML_CUDA_SCHED=auto|spin|yield|blocking`.
-Under WDDM on a 1 GB card driving a desktop, Windows reserves roughly 120-125 MiB of idle VRAM, leaving ~900 MiB for
-models and context (models up to 1.5B 3-bit fit; 1.7B models require either a headless secondary GPU setup or Linux).
+WDDM 2.x limits a single CUDA process on a consumer GeForce card to about 80% of VRAM: direct `cudaMalloc` probing
+measured a ceiling of 815.9 MiB (~815 MiB) on this 1 GB card, even after signing out with 961 MiB free in
+`nvidia-smi`. A logged-in desktop uses 112-125 MiB at idle, but moving it to an integrated or secondary GPU does not
+raise the per-process cap. Models up to 1.5B at 3 bits fit on a 1 GB Windows card; 1.7B and larger need a card with
+more than 1 GB or Linux.
 
 ## Using it
 
 Run models fully on the GPU (`-ngl 99`) and keep flash attention off (`-fa off`: this build has no flash-attention
-kernels for sm_30; "auto" costs about 8%). A 1 GB card fits models up to about 900 MB with a modest context:
+kernels for sm_30; "auto" costs about 8%). On a 1 GB card, allow for a modest context within the platform's GPU
+budget: about 981 MiB free headless on Linux, or an 815 MiB per-process CUDA allocation cap under Windows WDDM.
 
 ```bash
 llama-server -m LFM2.5-350M-Q4_K_M.gguf -ngl 99 -fa off -t 1
@@ -108,7 +112,8 @@ llama-cli    -m Qwen3-1.7B-Q3_K_S.gguf  -ngl 99 -fa off -c 1024 -ub 32
 ```
 
 - Models of about 700 MB and up need a smaller micro-batch: `-ub 128`, or `-ub 32` for 1.7B models at 3 bits.
-- 1.7B models fit at 3 bits per weight (Q3_K_S / Q3_K_M with an importance matrix keep quality close to 4-bit).
+- On Linux, 1.7B models fit at 3 bits per weight (Q3_K_S / Q3_K_M with an importance matrix keep quality close to
+  4-bit); under Windows WDDM they need more than 1 GB of VRAM.
 - `-ctk q8_0` (8-bit K cache) frees enough memory for `-ub 64` at `-c 1024` on 1.7B models: prompt processing
   57 t/s instead of 31, for about +1.2% perplexity and -3% generation speed.
 - Every Kepler path has a switch: `GGML_CUDA_KEPLER_MMV=0` (matvec kernels off), `GGML_CUDA_KEPLER_PP=off`,

@@ -6,7 +6,8 @@
 #   WORK_DIR  where llama.cpp is cloned and built (default: ./work)
 #   CUDA_DIR  CUDA 10.2 toolkit (default: $HOME/cuda-10.2, see scripts/install-cuda-10.2.sh)
 # Env: CLANG_VERSION (default 22: clang-22, clang++-22, ld.lld-22 must be on PATH), JOBS (default: nproc),
-#      TARGETS (default: llama-cli llama-server llama-completion llama-bench test-backend-ops).
+#      TARGETS (default: llama-cli llama-server llama-completion llama-bench test-backend-ops),
+#      NO_CCACHE=1 disables automatic ccache/sccache use.
 # Result: WORK_DIR/llama.cpp/build/bin/*
 set -eu
 HERE=$(cd "$(dirname "$0")/.." && pwd)
@@ -15,6 +16,17 @@ CUDA_DIR=${2:-$HOME/cuda-10.2}
 V=${CLANG_VERSION:-22}
 JOBS=${JOBS:-$(nproc)}
 TARGETS=${TARGETS:-llama-cli llama-server llama-completion llama-bench test-backend-ops}
+LAUNCHER_ARGS=()
+if [ "${NO_CCACHE:-0}" != 1 ]; then
+  if command -v ccache > /dev/null; then
+    LAUNCHER=$(command -v ccache)
+    LAUNCHER_ARGS+=("-DCMAKE_C_COMPILER_LAUNCHER=$LAUNCHER" "-DCMAKE_CXX_COMPILER_LAUNCHER=$LAUNCHER"
+      "-DCMAKE_CUDA_COMPILER_LAUNCHER=$LAUNCHER")
+  elif command -v sccache > /dev/null; then
+    LAUNCHER=$(command -v sccache)
+    LAUNCHER_ARGS+=("-DCMAKE_C_COMPILER_LAUNCHER=$LAUNCHER" "-DCMAKE_CXX_COMPILER_LAUNCHER=$LAUNCHER")
+  fi
+fi
 UPSTREAM=https://github.com/ggml-org/llama.cpp.git
 BASE_TAG=v1.0.0
 BASE_COMMIT=b1b770d90d94cad9e9ea5b993bdbc383a522fb28
@@ -62,6 +74,7 @@ cmake -S "$SRC" -B "$SRC/build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_EXE_LINKER_FLAGS="--ld-path=$(command -v ld.lld-$V) -Wl,--disable-new-dtags" \
   -DCMAKE_SHARED_LINKER_FLAGS="--ld-path=$(command -v ld.lld-$V) -Wl,--disable-new-dtags" \
   -DCMAKE_BUILD_RPATH="$SRC/build/bin;$CUDA_DIR/lib64" \
+  ${LAUNCHER_ARGS[@]+"${LAUNCHER_ARGS[@]}"} \
   -DGGML_CUDA=ON -DGGML_NATIVE=ON \
   -DGGML_CUDA_GRAPHS=OFF -DGGML_CUDA_FA=OFF -DGGML_CUDA_NCCL=OFF -DGGML_CUDA_NO_VMM=ON \
   -DLLAMA_BUILD_HTML=OFF -DLLAMA_USE_PREBUILT_UI=OFF -DLLAMA_CURL=OFF \

@@ -1,6 +1,7 @@
 # Fetch llama.cpp v1.0.0, apply the patch series, and build the CUDA backend for Kepler (sm_30).
 # Usage: scripts/build.ps1 [WORK_DIR] [CUDA_DIR]
-# Env: TARGETS, JOBS, LLVM_DIR (default: C:\Program Files\LLVM\bin).
+# Env: TARGETS, JOBS, LLVM_DIR (default: C:\Program Files\LLVM\bin), NO_CCACHE=1 disables automatic
+#      sccache/ccache use; CCACHE_CUDA=1 opts ccache into CUDA compiler caching (unverified on Windows).
 param(
     [string]$WorkDir = '.\work',
     [string]$CudaDir = 'C:\cuda-10.2'
@@ -142,6 +143,18 @@ $cmakeArgs = @(
     '-DLLAMA_BUILD_HTML=OFF', '-DLLAMA_USE_PREBUILT_UI=OFF', '-DLLAMA_CURL=OFF',
     '-DLLAMA_BUILD_TESTS=ON', '-DLLAMA_BUILD_SERVER=ON', '-DLLAMA_BUILD_TOOLS=ON'
 )
+if ($env:NO_CCACHE -ne '1') {
+    $cacheTool = Get-Command 'sccache' -ErrorAction SilentlyContinue
+    if (-not $cacheTool) { $cacheTool = Get-Command 'ccache' -ErrorAction SilentlyContinue }
+    if ($cacheTool) {
+        $cachePath = $cacheTool.Source -replace '\\', '/'
+        $cmakeArgs += "-DCMAKE_C_COMPILER_LAUNCHER=$cachePath"
+        $cmakeArgs += "-DCMAKE_CXX_COMPILER_LAUNCHER=$cachePath"
+        if ($cacheTool.Name -match '^ccache(\.exe)?$' -and $env:CCACHE_CUDA -eq '1') {
+            $cmakeArgs += "-DCMAKE_CUDA_COMPILER_LAUNCHER=$cachePath"
+        }
+    }
+}
 & cmake @cmakeArgs
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
