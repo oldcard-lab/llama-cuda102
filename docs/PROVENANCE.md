@@ -10,6 +10,7 @@
 | 0004 | Kepler im2col path | this project |
 | 0005 | FunctionGemma tool-call parser | this project |
 | 0006 | Windows Kepler CUDA graphs (guarded for cuBLAS < 11.2), 1 ms timer resolution with Windows 11 power-throttling opt-out, optional device scheduling switch | this project |
+| 0007 | Kepler (`sm_30`) dequant-on-the-fly prompt GEMM (`mmgk`) for Q4_K, Q3_K, Q5_K, Q6_K, Q8_0, Q4_0, Q5_0, zero-cuBLAS dispatch, and CUDA 10.2 graph compatibility | this project |
 
 ## How the port was forward-ported
 
@@ -44,6 +45,18 @@ guards `mmvk_q3k_texture` during stream capture, and skips graph capture on cuBL
 node that invokes cuBLAS (cuBLAS 10.2 lacks `cublasSetWorkspace`, which the Windows release gate caught corrupting
 batched perplexity while single-token decode remained bit-exact). Patch 0006 was authored by Codex agents and reviewed
 across Muse Code, Grok, Wafer Kimi, and AGY before full hardware verification.
+
+On 2026-11-27, patch 0007 (`mmgk.cuh`, `mmgk.cu`, and `ggml-cuda.cu` dispatch/graph wiring) added custom `sm_30`
+dequant-on-the-fly prompt GEMM kernels (`mmgk_wide<8/16>` for `N <= 16`, 256-thread `mmgk_tiled64x32` for `17 <= N <= 32`,
+and `LDS.128` 4x4 `mmgk_tiled64x64` for `N >= 33`) covering `Q4_K`, `Q3_K`, `Q5_K`, `Q6_K`, `Q8_0`, `Q4_0`, and `Q5_0`.
+Dispatch runs before `ggml_cuda_mul_mat_cublas` so `ctx.cublas_handle()` is never initialized on supported prompt paths
+(reclaiming ~31 MiB cuBLAS context + FP32 dequant scratch) and registers with patch 0006's CUDA 10.2 graph guard so
+Windows batched prompts retain graph capture. Default `GGML_CUDA_KEPLER_PP=auto` (`GGML_CUDA_KEPLER_PP_MAX_N=32`) pairs
+`mmgk` at `N = 2..32` (+12% to +56% over cuBLAS) with patch 0003's cuBLAS fallback above `N = 32` (zero regression at
+`-ub 64/128`), while `GGML_CUDA_KEPLER_PP=gemm` forces zero-cuBLAS prompt GEMM for all `N >= 2`. Patch 0007 was authored
+with Codex (`gpt-6-luna`), reviewed across Muse Code and Wafer (`DeepSeek-V4-Flash`), and verified on both Linux and
+Windows 11 on the GTX 650 Ti (zero register spills across all 28 kernels, `2436/2436` `MUL_MAT` and `1033/1033`
+`MUL_MAT_ID` passing on both OSes, 4-decimal perplexity parity, and 0 GPU faults).
 
 ## History
 

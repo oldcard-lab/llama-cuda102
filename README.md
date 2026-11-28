@@ -13,8 +13,11 @@ that supports sm_30 (CUDA 10.2), using clang as the CUDA compiler, on top of the
 
 - **Kepler matrix-vector kernels** for token generation (Q3_K, Q4_K, Q5_K, Q6_K, Q8_0, Q5_0, IQ3_XXS, F16) and the
   attention matvecs, 1.8-3.3x the stock CUDA kernels on this hardware.
-- **A faster prompt path** on Kepler: row-chunked dequantization and token columns padded so cuBLAS 10.2 picks its
-  fast sm_30 GEMM kernel.
+- **A faster prompt path** on Kepler: custom `sm_30` dequant-on-the-fly prompt GEMM kernels (`mmgk`, patch 0007) for
+  Q4_K, Q3_K, Q5_K, Q6_K, Q8_0, Q4_0, and Q5_0 at `N = 2..32` (+12% to +56% over cuBLAS at `-ub 16`/`-ub 32`, avoiding
+  the 31 MiB cuBLAS context and keeping CUDA 10.2 graphs active), paired with row-chunked dequantization and padded
+  cuBLAS 10.2 fallback for larger micro-batches (plus opt-in `GGML_CUDA_KEPLER_PP=gemm` for zero-cuBLAS prompt GEMM at
+  any `N >= 2`).
 - **A Kepler im2col** for convolution models (YOLO-class detectors), 18% faster per frame.
 - A **FunctionGemma** tool-call parser for `llama-server --jinja`.
 
@@ -115,9 +118,13 @@ llama-cli    -m Qwen3-1.7B-Q3_K_S.gguf  -ngl 99 -fa off -c 1024 -ub 32
 - On Linux, 1.7B models fit at 3 bits per weight (Q3_K_S / Q3_K_M with an importance matrix keep quality close to
   4-bit); under Windows WDDM they need more than 1 GB of VRAM.
 - `-ctk q8_0` (8-bit K cache) frees enough memory for `-ub 64` at `-c 1024` on 1.7B models: prompt processing
-  57 t/s instead of 31, for about +1.2% perplexity and -3% generation speed.
-- Every Kepler path has a switch: `GGML_CUDA_KEPLER_MMV=0` (matvec kernels off), `GGML_CUDA_KEPLER_PP=off`,
-  `GGML_CUDA_KEPLER_IM2COL=off` restore the stock code paths; `GGML_CUDA_KEPLER_TRACE=1` prints which kernel ran.
+  57 t/s instead of 31, for about +1.2% perplexity and -3% generation speed. With patch 0007,
+  `GGML_CUDA_KEPLER_PP=gemm` also lets Qwen3-1.7B Q3_K_S run at `-c 1024 -ub 64` with full `f16` KV cache on 1 GB Linux
+  by eliminating the ~31 MiB cuBLAS context and FP32 dequant scratch (~42.3 t/s prompt eval, 23.1 t/s generation).
+- Every Kepler path has a switch: `GGML_CUDA_KEPLER_MMV=0` (matvec kernels off), `GGML_CUDA_KEPLER_PP=auto|gemm|pad|chunk|cublas|off`
+  (default `auto` uses `mmgk` up to `GGML_CUDA_KEPLER_PP_MAX_N`, default `32`, and cuBLAS fallback above; `gemm` forces
+  `mmgk` for all `N >= 2`; `pad`/`chunk` select the legacy cuBLAS path; `cublas`/`off` select stock cuBLAS),
+  `GGML_CUDA_KEPLER_IM2COL=off` restores the stock im2col path; `GGML_CUDA_KEPLER_TRACE=1` prints which kernel ran.
 
 ## Tested on
 
@@ -150,7 +157,7 @@ Reports from other cards are welcome as issues. For sm_35 / sm_37 today, see
   Forward-ported to v0.8.0 and then to v1.0.0 here.
 - **This project (oldcard-lab)**: the fixes to the port (0002), the Kepler kernels and prompt path (0003), the
   im2col path (0004), the FunctionGemma parser (0005), the Windows Kepler CUDA graphs and timer patch (0006), the
-  scripts and the strict kernel checker.
+  dequant-on-the-fly `sm_30` prompt GEMM kernels (0007), the scripts and the strict kernel checker.
 - **The ggml authors**: llama.cpp and ggml themselves (MIT).
 
 Details per patch: [docs/PROVENANCE.md](docs/PROVENANCE.md). The

@@ -62,14 +62,36 @@ v0.8.0 (2026-11-22). `-ngl 99 -fa off -t 1`.
 
 ## Prompt processing (llama-bench pp256, tokens/s)
 
-| Model | -ub | Stock path (`GGML_CUDA_KEPLER_PP=off`) | This build |
-|---|---:|---:|---:|
-| Qwen3-1.7B Q3_K_S | 32 | 26.7 | 32.5 |
-| Qwen3-1.7B Q3_K_S | 64 | 29.3 | 63.0 |
-| Qwen2.5-Coder-1.5B Q3_K_S | 32 | 26.2 | 32.4 |
-| LFM2.5-1.2B Q4_K_M | 64 | 41.6 | 95.4 |
-| Qwen3-0.6B Q8_0 | 128 | 321.6 | 321.8 |
-| LFM2.5-350M Q4_K_M | 128 | 615.8 | 616.2 |
+| Model | -ub | Stock path (`GGML_CUDA_KEPLER_PP=off`) | Legacy cuBLAS (`pad`) | This build (`auto`, patch 0007) |
+|---|---:|---:|---:|---:|
+| LFM2.5-350M Q4_K_M | 16 | - | 76.0 | 93.7 (+23.3%) |
+| LFM2.5-350M Q4_K_M | 32 | - | 149.8 | 197.4 (+31.8%) |
+| LFM2.5-350M Q4_K_M | 64 | - | 291.5 | 291.5 |
+| LFM2.5-350M Q4_K_M | 128 | 615.8 | 616.2 | 616.2 |
+| Qwen3-0.6B Q4_K_M | 16 | - | 51.5 | 57.4 (+11.5%) |
+| Qwen3-0.6B Q4_K_M | 32 | - | 98.9 | 113.1 (+14.3%) |
+| Qwen3-0.6B Q8_0 | 16 | - | 46.7 | 72.7 (+55.8%) |
+| Qwen3-0.6B Q8_0 | 32 | - | 90.0 | 135.6 (+50.7%) |
+| Qwen3-0.6B Q8_0 | 128 | 321.6 | 321.8 | 321.8 |
+| LFM2.5-1.2B Q4_K_M | 64 | 41.6 | 95.4 | 95.4 |
+| Qwen2.5-Coder-1.5B Q3_K_S | 16 | - | 16.3 | 21.1 (+29.4%) |
+| Qwen2.5-Coder-1.5B Q3_K_S | 32 | 26.2 | 32.3 | 45.9 (+42.3%) |
+| Qwen3-1.7B Q3_K_S | 16 | - | 16.4 | 19.5 (+19.1%) |
+| Qwen3-1.7B Q3_K_S | 32 | 26.7 | 32.3 | 40.6 (+25.8%) |
+| Qwen3-1.7B Q3_K_S | 64 | 29.3 | 62.7 | 62.7 |
+
+Patch `0007` (`mmgk`, 2026-11-27) replaces dequantize + cuBLAS at `N = 2..32` (`GGML_CUDA_KEPLER_PP=auto`, default
+`GGML_CUDA_KEPLER_PP_MAX_N=32`) for `Q4_K`, `Q3_K`, `Q5_K`, `Q6_K`, `Q8_0`, `Q4_0`, and `Q5_0` with zero register
+spills (`REG <= 63`, `STACK: 0`, `LOCAL: 0` across all 28 kernels on both Linux and Windows). Correctness on both
+Linux and Windows GTX 650 Ti: `test-backend-ops` `MUL_MAT` `2436/2436` OK (both `auto` and `gemm`), `MUL_MAT_ID`
+`1033/1033` OK, `mmvk-check` `512/512` plain & `--weights` (`0` FAIL, worst `6.70e-8`), GPL-3 4-chunk perplexity within
+`0.001%-0.009%` across Linux/Windows and `pad`/`auto`/`gemm`, and `0` GPU faults (Xid / TDR).
+With `GGML_CUDA_KEPLER_PP=gemm`, eliminating the ~31 MiB cuBLAS context + FP32 dequant scratch lets
+`Qwen3-1.7B-Q3_K_S` run at `-c 1024 -b 64 -ub 64` with full `f16` KV cache on 1 GB Linux (`42.34 t/s` prompt eval,
+`23.08 t/s` generation), where the legacy `pad` path OOMs. On Windows 11 WDDM (`815 MiB` per-process cap), patch 0007
+delivers matching/larger prompt gains (`LFM2.5-350M` `-ub 32`: `148.1 -> 197.8 t/s`, +33.5%; `Qwen3-0.6B Q8_0` `-ub 32`:
+`87.0 -> 131.4 t/s`, +51.1%; `Qwen2.5-Coder-1.5B` `-ub 32`: `32.0 -> 46.6 t/s`, +45.5%) while keeping CUDA 10.2 graphs
+enabled for batched prompts; `Qwen3-1.7B` still hits WDDM's 815 MiB cap during `graph_reserve` before prompt execution.
 
 ## Agent-style calls (prompt of N tokens + 128 generated, modelled from measured pp and tg at depth)
 
